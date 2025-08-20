@@ -12,11 +12,16 @@ import sys
 import os
 
 app = Flask(__name__, static_folder="static")
-CORS(app)
-# CORS(app, resources={r"/api/*": {"origins": "website-a7a.pages.dev"}})
+CORS(app, resources={
+    r"/*": {
+        "origins": ["http://127.0.0.1:5501", "https://schipperstatlines.onrender.com"]
+    }
+})
+# CORS(app resources={r"/*": {"origins": "website-a7a.pages.dev"}})
 cache.enable()
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "baseball.db")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(BASE_DIR, "baseball.db")
 
 KNOWN_TWO_WAY_PLAYERS = {
     # Modern era two-way players
