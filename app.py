@@ -1,4 +1,5 @@
 from flask import Flask, request, jsonify, send_from_directory
+from flask_cors import CORS
 from pybaseball import playerid_lookup, batting_stats, cache
 from pybaseball import pitching_stats
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -11,6 +12,7 @@ import sys
 import os
 
 app = Flask(__name__, static_folder="static")
+CORS(app, resources={r"/api/*": {"origins": "website-a7a.pages.dev"}})
 cache.enable()
 
 DB_PATH = r"C:\Users\noahs\OneDrive\Documents\Baseball Stats\lahman2024.db"
