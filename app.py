@@ -16,7 +16,7 @@ CORS(app)
 # CORS(app, resources={r"/api/*": {"origins": "website-a7a.pages.dev"}})
 cache.enable()
 
-DB_PATH = r"C:\Users\noahs\OneDrive\Documents\Baseball Stats\lahman2024.db"
+DB_PATH = os.path.join(os.path.dirname(__file__), "baseball.db")
 
 KNOWN_TWO_WAY_PLAYERS = {
     # Modern era two-way players
