@@ -1,7 +1,7 @@
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
-from pybaseball import playerid_lookup, batting_stats, cache
-from pybaseball import pitching_stats
+from pybaseball import playerid_lookup, cache
+from pybaseball import batting_stats, pitching_stats
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import sqlite3
 import pandas as pd
@@ -14,9 +14,10 @@ import os
 app = Flask(__name__, static_folder="static")
 CORS(app, resources={
     r"/*": {
-        "origins": ["http://127.0.0.1:5501", "https://noahschipper.pythonanywhere.com"]
+        "origins": [ "https://schipperstatlines.onrender.com", "https://website-a7a.pages.dev"],
     }
 })
+# "http://127.0.0.1:5501",
 # CORS(app resources={r"/*": {"origins": "website-a7a.pages.dev"}})
 cache.enable()
 
@@ -1021,6 +1022,12 @@ def get_player_stats():
 
 
 def handle_pitcher_stats(playerid, conn, mode, photo_url, first, last):
+    
+    if mode == 'live':
+        return jsonify({"error": "Live stats temporarily disabled"}), 503
+    elif mode == 'combined':
+        return jsonify({"error": "Combined stats temporarily disabled"}), 503
+    
     stats_query = """
     SELECT yearid, teamid, w, l, g, gs, cg, sho, sv, ipouts, h, er, hr, bb, so, era
     FROM lahman_pitching WHERE playerid = ?
@@ -1033,6 +1040,7 @@ def handle_pitcher_stats(playerid, conn, mode, photo_url, first, last):
     current_year = datetime.date.today().year
     live_row = pd.DataFrame()
 
+    
     try:
         df_live = pitching_stats(current_year, qual=0)
         live_row = find_live_player_match(df_live, first, last)
@@ -1071,7 +1079,8 @@ def handle_pitcher_stats(playerid, conn, mode, photo_url, first, last):
 
     except Exception as e:
         live_row = pd.DataFrame()
-
+    
+    
     if mode == "career":
         if df_lahman.empty:
             return jsonify({"error": "No pitching stats found"}), 404
@@ -1398,6 +1407,7 @@ def handle_pitcher_stats(playerid, conn, mode, photo_url, first, last):
 def handle_hitter_stats(playerid, mode, photo_url, first, last):
     conn = sqlite3.connect(DB_PATH)
 
+    
     stats_query = """
     SELECT yearid, teamid, g, ab, h, hr, rbi, sb, bb, hbp, sf, sh, "2b", "3b"
     FROM lahman_batting WHERE playerid = ?
@@ -1409,12 +1419,14 @@ def handle_hitter_stats(playerid, mode, photo_url, first, last):
     current_year = datetime.date.today().year
     live_row = pd.DataFrame()
 
+    
     try:
         df_live = batting_stats(current_year)
         live_row = find_live_player_match(df_live, first, last)
     except Exception as e:
         live_row = pd.DataFrame()
-
+   
+    
     if mode == "career":
         if df_lahman.empty:
             return jsonify({"error": "No batting stats found"}), 404
