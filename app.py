@@ -1,7 +1,7 @@
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
-from pybaseball import playerid_lookup, cache
-# from pybaseball import batting_stats, pitching_stats
+from pybaseball import playerid_lookup, batting_stats, cache
+from pybaseball import pitching_stats
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import sqlite3
 import pandas as pd
@@ -1021,9 +1021,6 @@ def get_player_stats():
 
 
 def handle_pitcher_stats(playerid, conn, mode, photo_url, first, last):
-    if mode == "live":
-        return jsonify({"error": "Live stats temporarily unavailable"}), 503
-
     stats_query = """
     SELECT yearid, teamid, w, l, g, gs, cg, sho, sv, ipouts, h, er, hr, bb, so, era
     FROM lahman_pitching WHERE playerid = ?
@@ -1036,7 +1033,6 @@ def handle_pitcher_stats(playerid, conn, mode, photo_url, first, last):
     current_year = datetime.date.today().year
     live_row = pd.DataFrame()
 
-    '''
     try:
         df_live = pitching_stats(current_year, qual=0)
         live_row = find_live_player_match(df_live, first, last)
@@ -1075,8 +1071,7 @@ def handle_pitcher_stats(playerid, conn, mode, photo_url, first, last):
 
     except Exception as e:
         live_row = pd.DataFrame()
-    '''
-    
+
     if mode == "career":
         if df_lahman.empty:
             return jsonify({"error": "No pitching stats found"}), 404
@@ -1401,9 +1396,6 @@ def handle_pitcher_stats(playerid, conn, mode, photo_url, first, last):
 
 
 def handle_hitter_stats(playerid, mode, photo_url, first, last):
-    if mode == "live":
-        return jsonify({"error": "Live stats temporarily unavailable"}), 503
-    
     conn = sqlite3.connect(DB_PATH)
 
     stats_query = """
@@ -1417,13 +1409,11 @@ def handle_hitter_stats(playerid, mode, photo_url, first, last):
     current_year = datetime.date.today().year
     live_row = pd.DataFrame()
 
-    '''
     try:
         df_live = batting_stats(current_year)
         live_row = find_live_player_match(df_live, first, last)
     except Exception as e:
         live_row = pd.DataFrame()
-    '''
 
     if mode == "career":
         if df_lahman.empty:
