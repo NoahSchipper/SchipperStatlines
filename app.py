@@ -1031,8 +1031,6 @@ def handle_pitcher_stats(playerid, conn, mode, photo_url, first, last):
 
     # get awards for this player
     awards_data = get_player_awards(playerid, conn)
-
-    # Remove all live stats logic - no more current_year or live_row variables
     
     if mode == "career":
         if df_lahman.empty:
@@ -1114,6 +1112,7 @@ def handle_pitcher_stats(playerid, conn, mode, photo_url, first, last):
             "era_final": "era",
         })
 
+        conn.close()
         return jsonify({
             "mode": "season",
             "player_type": "pitcher",
@@ -1124,9 +1123,11 @@ def handle_pitcher_stats(playerid, conn, mode, photo_url, first, last):
 
     # Return error for live and combined modes
     elif mode in ["live", "combined"]:
+        conn.close()
         return jsonify({"error": f"{mode.title()} stats temporarily disabled"}), 503
 
     else:
+        conn.close()
         return jsonify({"error": "Invalid mode"}), 400
 
 
@@ -1139,11 +1140,10 @@ def handle_hitter_stats(playerid, mode, photo_url, first, last):
     """
     df_lahman = pd.read_sql_query(stats_query, conn, params=(playerid,))
     awards_data = get_player_awards(playerid, conn)
-
-    # Remove all live stats logic
     
     if mode == "career":
         if df_lahman.empty:
+            conn.close()
             return jsonify({"error": "No batting stats found"}), 404
 
         totals = df_lahman.agg({
@@ -1188,6 +1188,7 @@ def handle_hitter_stats(playerid, mode, photo_url, first, last):
 
     elif mode == "season":
         if df_lahman.empty:
+            conn.close()
             return jsonify({"error": "No batting stats found"}), 404
 
         df_war_history = get_season_war_history(playerid)
@@ -1220,6 +1221,7 @@ def handle_hitter_stats(playerid, mode, photo_url, first, last):
             "hbp": "hit_by_pitch", "sf": "sacrifice_flies", "2b": "doubles", "3b": "triples",
         })
 
+        conn.close()
         return jsonify({
             "mode": "season",
             "player_type": "hitter",
@@ -1230,11 +1232,12 @@ def handle_hitter_stats(playerid, mode, photo_url, first, last):
 
     # Return error for live and combined modes
     elif mode in ["live", "combined"]:
+        conn.close()
         return jsonify({"error": f"{mode.title()} stats temporarily disabled"}), 503
 
     else:
+        conn.close()
         return jsonify({"error": "Invalid mode"}), 400
-
 
 def get_live_stats_name_variations(first, last):
     """Generate name variations for live stats lookup"""
