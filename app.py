@@ -14,7 +14,7 @@ import os
 app = Flask(__name__, static_folder="static")
 CORS(app, resources={
     r"/*": {
-        "origins": [ "https://schipperstatlines.onrender.com", "https://website-a7a.pages.dev"],
+        "origins": [ "https://schipperstatlines.onrender.com", "https://website-a7a.pages.dev", "http://127.0.0.1:5501"],
     }
 })
 # "http://127.0.0.1:5501",
