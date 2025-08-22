@@ -858,7 +858,7 @@ def get_player_with_disambiguation():
     # [Include your existing photo URL and stats logic here]
     photo_url = get_photo_url_for_player(playerid, conn)
 
-    if player_type == "pitcher":
+    if final_type == "pitcher":
         return handle_pitcher_stats(playerid, conn, mode, photo_url, first, last)
     else:
         conn.close()
@@ -1238,127 +1238,6 @@ def handle_hitter_stats(playerid, mode, photo_url, first, last):
     else:
         conn.close()
         return jsonify({"error": "Invalid mode"}), 400
-
-def get_live_stats_name_variations(first, last):
-    """Generate name variations for live stats lookup"""
-    variations = []
-
-    # Base name
-    variations.append((first, last))
-
-    # Common Jr/Sr name patterns for live stats
-    name_mappings = {
-        # Key: (database_first, database_last) -> Live stats name variations
-        ("fernando", "tatis"): [
-            "Fernando Tatis Jr.",
-            "Fernando Tatis",
-            "F. Tatis Jr.",
-            "Tatis Jr.",
-        ],
-        ("ken", "griffey"): [
-            "Ken Griffey Jr.",
-            "Ken Griffey",
-            "K. Griffey Jr.",
-            "Griffey Jr.",
-        ],
-        ("cal", "ripken"): [
-            "Cal Ripken Jr.",
-            "Cal Ripken",
-            "C. Ripken Jr.",
-            "Ripken Jr.",
-        ],
-        ("tim", "raines"): [
-            "Tim Raines Jr.",
-            "Tim Raines",
-            "T. Raines Jr.",
-            "Raines Jr.",
-        ],
-        ("sandy", "alomar"): [
-            "Sandy Alomar Jr.",
-            "Sandy Alomar",
-            "S. Alomar Jr.",
-            "Alomar Jr.",
-        ],
-        ("pete", "rose"): ["Pete Rose Jr.", "Pete Rose", "P. Rose Jr.", "Rose Jr."],
-    }
-
-    # Check if this is a known Jr/Sr case
-    key = (first.lower(), last.lower())
-    if key in name_mappings:
-        return name_mappings[key]
-
-    # General patterns to try
-    base_patterns = [
-        f"{first} {last}",
-        f"{first} {last} Jr.",
-        f"{first} {last} Sr.",
-        f"{first[0]}. {last}",
-        f"{first[0]}. {last} Jr.",
-        f"{first[0]}. {last} Sr.",
-        f"{last}",
-        f"{last} Jr.",
-        f"{last} Sr.",
-    ]
-
-    return base_patterns
-
-
-def find_live_player_match(df_live, first, last):
-    """Find matching player in live stats with various name patterns"""
-    if df_live.empty:
-        return pd.DataFrame()
-
-    # Clean the Name column
-    df_live["Name"] = df_live["Name"].str.strip()
-    df_live["Name_lower"] = df_live["Name"].str.lower()
-
-    # Get name variations to try
-    name_variations = get_live_stats_name_variations(first, last)
-
-    # Try each variation
-    for name_pattern in name_variations:
-        # Exact match
-        exact_match = df_live[df_live["Name_lower"] == name_pattern.lower()]
-        if not exact_match.empty:
-            return exact_match.head(1)
-
-        # Partial match (contains)
-        partial_match = df_live[
-            df_live["Name_lower"].str.contains(name_pattern.lower(), na=False)
-        ]
-        if not partial_match.empty:
-            # If multiple matches, try to find the best one
-            if len(partial_match) == 1:
-                return partial_match.head(1)
-            else:
-                # Prefer exact matches in the partial results
-                for _, row in partial_match.iterrows():
-                    if name_pattern.lower() in row["Name_lower"]:
-                        return partial_match[partial_match["Name"] == row["Name"]].head(
-                            1
-                        )
-
-    # Last resort: fuzzy matching on last name only
-    last_name_matches = df_live[
-        df_live["Name_lower"].str.contains(last.lower(), na=False)
-    ]
-    if not last_name_matches.empty:
-        # Try to find one that also contains first name or first initial
-        for _, row in last_name_matches.iterrows():
-            name_lower = row["Name_lower"]
-            if (
-                first.lower() in name_lower
-                or f"{first[0].lower()}." in name_lower
-                or f"{first[0].lower()} " in name_lower
-            ):
-                return last_name_matches[last_name_matches["Name"] == row["Name"]].head(
-                    1
-                )
-
-        # If no first name match, return the first last name match
-        return last_name_matches.head(1)
-
-    return pd.DataFrame()
 
 
 @app.route("/team")
