@@ -57,16 +57,12 @@ pip install -r requirements.txt
 This project uses data from:
 
 The Lahman Baseball Database
+
 pybaseball library
+
 Jeff Bagwell's baseball data collections
+
 Retrosheet organization
-
-## Acknowledgments
-
-Sean Lahman for the comprehensive baseball database
-The pybaseball development team
-Retrosheet volunteers for play-by-play data collection
-Jeff Bagwell for specialized baseball analytics datasets
 
 ## Notes
 
