@@ -9,7 +9,6 @@ import os
 import datetime
 import time
 import sys
-import os
 
 app = Flask(__name__, static_folder="static")
 CORS(app, resources={
@@ -22,6 +21,7 @@ cache.enable()
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "baseball.db")
+
 ''' (Team Endpoint -- still included for completeness, not used in this version)
 KNOWN_TWO_WAY_PLAYERS = {
     # Modern era two-way players
