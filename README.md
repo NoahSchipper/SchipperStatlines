@@ -1,18 +1,16 @@
-# SchipperStatlines
+# Schipper Statlines
 
-An interactive baseball statistics project modeled after Stathead's versus finder. This project provides comprehensive baseball analytics and comparison capabilities using historical and modern baseball data.
+An interactive baseball statistics project modeled after stathead's versus finder. This project provides comprehensive baseball analytics and comparison capabilities using historical and modern baseball data.
 
 ## Features
 
-1. Player Comparisons: Side-by-side statistical comparisons between baseball players
+1. Player Comparisons: Side-by-side statistical comparisons between both baseball players and teams
 
 2. Team Analysis: Comprehensive team performance metrics and historical data
 
-3. Interactive Interface: User-friendly tools for exploring baseball statistics
+3. Historical Data: Access to extensive historical baseball records
 
-4. Historical Data: Access to extensive historical baseball records
-
-5. Advanced Metrics: Modern sabermetric statistics and analytics
+4. Advanced Metrics: Modern sabermetric statistics and analytics
 
 ## Installation
 
