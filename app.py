@@ -3,14 +3,20 @@ from flask_cors import CORS
 from pybaseball import playerid_lookup, cache
 # from pybaseball import batting_stats, pitching_stats
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import sqlite3
 import pandas as pd
 import os
-import datetime
-import time
-import sys
+import psycopg2
+from psycopg2.extras import RealDictCursor
+from supabase import create_client, Client
 
 app = Flask(__name__, static_folder="static")
+
+SUPABASE_URL = os.environ.get('SUPABASE_URL')
+SUPABASE_KEY = os.environ.get('SUPABASE_ANON_KEY')
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+DATABASE_URL = os.environ.get('DATABASE_URL')  # From Supabase settings
+
 CORS(app, resources={
     r"/*": {
         "origins": [ "https://schipperstatlines.onrender.com", "https://website-a7a.pages.dev", "http://127.0.0.1:5501", "https://noahschipper.net"],
@@ -19,8 +25,15 @@ CORS(app, resources={
 
 cache.enable()
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, "baseball.db")
+def get_db_connection():
+    """Get PostgreSQL connection using psycopg2"""
+    conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+    return conn
+
+def get_supabase_client():
+    """Get Supabase client for easier operations"""
+    return supabase
+
 
 ''' (Team Endpoint -- still included for completeness, not used in this version)
 KNOWN_TWO_WAY_PLAYERS = {
@@ -58,7 +71,7 @@ def get_photo_url_for_player(playerid, conn):
         cursor.execute(
             """
             SELECT namefirst, namelast, debut, finalgame, birthyear 
-            FROM lahman_people WHERE playerid = ?
+            FROM lahman_people WHERE playerid = %s
         """,
             (playerid,),
         )
@@ -178,7 +191,7 @@ def get_world_series_championships(playerid, conn):
         FROM lahman_batting b
         JOIN lahman_seriespost sp ON b.yearid = sp.yearid AND b.teamid = sp.teamidwinner
         LEFT JOIN lahman_teams s ON b.teamid = s.teamid AND b.yearid = s.yearid
-        WHERE b.playerid = ? AND sp.round = 'WS'
+        WHERE b.playerid = %s AND sp.round = 'WS'
         
         UNION
         
@@ -186,7 +199,7 @@ def get_world_series_championships(playerid, conn):
         FROM lahman_pitching p
         JOIN lahman_seriespost sp ON p.yearid = sp.yearid AND p.teamid = sp.teamidwinner
         LEFT JOIN lahman_teams s ON p.teamid = s.teamid AND p.yearid = s.yearid
-        WHERE p.playerid = ? AND sp.round = 'WS'
+        WHERE p.playerid = %s AND sp.round = 'WS'
         
         ORDER BY 1 DESC
         """
@@ -210,7 +223,7 @@ def get_world_series_championships(playerid, conn):
                 """
                 SELECT yearid, notes
                 FROM lahman_awardsplayers 
-                WHERE playerid = ? AND awardid = 'WS'
+                WHERE playerid = %s AND awardid = 'WS'
                 ORDER BY yearid DESC
             """,
                 (playerid,),
@@ -236,14 +249,14 @@ def get_world_series_championships(playerid, conn):
 def get_career_war(playerid):
     """Get career WAR from JEFFBAGWELL database"""
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db_connection()
         cursor = conn.cursor()
 
         cursor.execute(
             """
             SELECT SUM(WAR162) as career_war 
             FROM jeffbagwell_war 
-            WHERE key_bbref = ?
+            WHERE key_bbref = %s
         """,
             (playerid,),
         )
@@ -262,12 +275,12 @@ def get_career_war(playerid):
 def get_season_war_history(playerid):
     """Get season-by-season WAR from JEFFBAGWELL database"""
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db_connection()
         df = pd.read_sql_query(
             """
             SELECT year_ID, WAR162 as war
             FROM jeffbagwell_war 
-            WHERE key_bbref = ?
+            WHERE key_bbref = %s
             ORDER BY year_ID DESC
         """,
             conn,
@@ -284,7 +297,7 @@ def detect_player_type(playerid, conn):
     """Detect if player is primarily a pitcher or hitter based on their stats"""
     pitching_query = """
     SELECT COUNT(*) as pitch_seasons, SUM(g) as total_games_pitched, SUM(gs) as total_starts
-    FROM lahman_pitching WHERE playerid = ?
+    FROM lahman_pitching WHERE playerid = %s
     """
     cursor = conn.cursor()
     cursor.execute(pitching_query, (playerid,))
@@ -292,7 +305,7 @@ def detect_player_type(playerid, conn):
 
     batting_query = """
     SELECT COUNT(*) as bat_seasons, SUM(g) as total_games_batted, SUM(ab) as total_at_bats
-    FROM lahman_batting WHERE playerid = ?
+    FROM lahman_batting WHERE playerid = %s
     """
     cursor.execute(batting_query, (playerid,))
     bat_result = cursor.fetchone()
@@ -322,7 +335,7 @@ def get_player_awards(playerid, conn):
         awards_query = """
         SELECT yearid, awardid, lgid, tie, notes
         FROM lahman_awardsplayers 
-        WHERE playerid = ?
+        WHERE playerid = %s
         ORDER BY yearid DESC, awardid
         """
 
@@ -443,7 +456,7 @@ def get_allstar_appearances(playerid, conn):
             """
             SELECT COUNT(*) as allstar_games
             FROM lahman_allstarfull 
-            WHERE playerid = ?
+            WHERE playerid = %s
         """,
             (playerid,),
         )
@@ -482,13 +495,13 @@ def get_player_with_two_way():
     if playerid is None:
         return jsonify({"error": "Player not found"}), 404
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     detected_type = detect_two_way_player_simple(playerid, conn)
 
     # Get player's actual name for display
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT namefirst, namelast FROM lahman_people WHERE playerid = ?", (playerid,)
+        "SELECT namefirst, namelast FROM lahman_people WHERE playerid = %s", (playerid,)
     )
     name_result = cursor.fetchone()
     first, last = name_result if name_result else ("Unknown", "Unknown")
@@ -540,7 +553,7 @@ def search_players_enhanced():
         return jsonify([])
 
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db_connection()
         cursor = conn.cursor()
 
         query_clean = query.lower().strip()
@@ -557,9 +570,9 @@ def search_players_enhanced():
             p.birthmonth,
             p.birthday,
             CASE 
-                WHEN LOWER(p.namefirst || ' ' || p.namelast) LIKE ? THEN 1
-                WHEN LOWER(p.namelast) LIKE ? THEN 2
-                WHEN LOWER(p.namefirst) LIKE ? THEN 3
+                WHEN LOWER(p.namefirst || ' ' || p.namelast) LIKE %s THEN 1
+                WHEN LOWER(p.namelast) LIKE %s THEN 2
+                WHEN LOWER(p.namefirst) LIKE %s THEN 3
                 ELSE 4
             END as priority,
             -- Get primary position
@@ -575,9 +588,9 @@ def search_players_enhanced():
                 SELECT 1 FROM lahman_pitching pt WHERE pt.playerid = p.playerid
             ) THEN 1 ELSE 0 END as has_stats
         FROM lahman_people p
-        WHERE (LOWER(p.namefirst || ' ' || p.namelast) LIKE ?
-           OR LOWER(p.namelast) LIKE ?
-           OR LOWER(p.namefirst) LIKE ?)
+        WHERE (LOWER(p.namefirst || ' ' || p.namelast) LIKE %s
+           OR LOWER(p.namelast) LIKE %s
+           OR LOWER(p.namefirst) LIKE %s)
         AND p.birthyear IS NOT NULL  -- Filter out entries without birth year
         ORDER BY priority, has_stats DESC, p.debut DESC, p.namelast, p.namefirst
         LIMIT 15
@@ -734,14 +747,14 @@ def improved_player_lookup_with_disambiguation(name):
 
     first, last = clean_name.split(" ", 1)
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     cursor = conn.cursor()
 
     # Find all players with this name
     all_players_query = """
     SELECT playerid, namefirst, namelast, debut, finalgame, birthyear
     FROM lahman_people
-    WHERE LOWER(namefirst) = ? AND LOWER(namelast) = ?
+    WHERE LOWER(namefirst) = %s AND LOWER(namelast) = %s
     ORDER BY debut
     """
 
@@ -817,13 +830,13 @@ def get_player_with_disambiguation():
         return jsonify({"error": "Player not found"}), 404
 
     # Continue with existing logic using the found playerid
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     detected_type = detect_two_way_player_simple(playerid, conn)
 
     # Get player's actual name for display
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT namefirst, namelast FROM lahman_people WHERE playerid = ?", (playerid,)
+        "SELECT namefirst, namelast FROM lahman_people WHERE playerid = %s", (playerid,)
     )
     name_result = cursor.fetchone()
     first, last = name_result if name_result else ("Unknown", "Unknown")
@@ -891,7 +904,7 @@ def popular_players():
 def all_players():
     """Get all player names - useful for client-side caching if needed"""
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db_connection()
         cursor = conn.cursor()
 
         # Get all players who have batting or pitching stats
@@ -925,13 +938,13 @@ def improved_player_lookup(name):
 
     first, last = name.split(" ", 1)
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     cursor = conn.cursor()
 
     # Try exact match first
     exact_query = """
     SELECT playerid FROM lahman_people
-    WHERE LOWER(namefirst) = ? AND LOWER(namelast) = ?
+    WHERE LOWER(namefirst) = %s AND LOWER(namelast) = %s
     LIMIT 1
     """
     cursor.execute(exact_query, (first.lower(), last.lower()))
@@ -945,14 +958,14 @@ def improved_player_lookup(name):
     fuzzy_query = """
     SELECT playerid, namefirst, namelast,
            CASE 
-               WHEN LOWER(namelast) = ? THEN 1
-               WHEN LOWER(namefirst) = ? THEN 2  
-               WHEN LOWER(namelast) LIKE ? THEN 3
-               WHEN LOWER(namefirst) LIKE ? THEN 4
+               WHEN LOWER(namelast) = %s THEN 1
+               WHEN LOWER(namefirst) = %s THEN 2  
+               WHEN LOWER(namelast) LIKE %s THEN 3
+               WHEN LOWER(namefirst) LIKE %s THEN 4
                ELSE 5
            END as match_quality
     FROM lahman_people
-    WHERE LOWER(namelast) LIKE ? OR LOWER(namefirst) LIKE ?
+    WHERE LOWER(namelast) LIKE %s OR LOWER(namefirst) LIKE %s
     ORDER BY match_quality
     LIMIT 1
     """
@@ -993,10 +1006,10 @@ def get_player_stats():
 
     first, last = name.split(" ", 1)
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     query_id = """
     SELECT playerid FROM lahman_people
-    WHERE LOWER(namefirst) = ? AND LOWER(namelast) = ?
+    WHERE LOWER(namefirst) = %s AND LOWER(namelast) = %s
     LIMIT 1
     """
     cur = conn.cursor()
@@ -1024,7 +1037,7 @@ def handle_pitcher_stats(playerid, conn, mode, photo_url, first, last):
     # Remove all live stats fetching
     stats_query = """
     SELECT yearid, teamid, w, l, g, gs, cg, sho, sv, ipouts, h, er, hr, bb, so, era
-    FROM lahman_pitching WHERE playerid = ?
+    FROM lahman_pitching WHERE playerid = %s
     """
     df_lahman = pd.read_sql_query(stats_query, conn, params=(playerid,))
 
@@ -1131,11 +1144,11 @@ def handle_pitcher_stats(playerid, conn, mode, photo_url, first, last):
 
 
 def handle_hitter_stats(playerid, mode, photo_url, first, last):
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     
     stats_query = """
     SELECT yearid, teamid, g, ab, h, hr, rbi, sb, bb, hbp, sf, sh, "2b", "3b"
-    FROM lahman_batting WHERE playerid = ?
+    FROM lahman_batting WHERE playerid = %s
     """
     df_lahman = pd.read_sql_query(stats_query, conn, params=(playerid,))
     awards_data = get_player_awards(playerid, conn)
@@ -1264,7 +1277,7 @@ def get_team_stats():
 def handle_combined_team_stats(team_id, year, mode):
     """Get both batting and pitching stats in one query - updated for StatHead format"""
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db_connection()
 
         # Track the actual year being used
         actual_year = None
@@ -1278,7 +1291,7 @@ def handle_combined_team_stats(team_id, year, mode):
                    -- We'll calculate playoff stats separately
                    0 as playoff_apps, 0 as ws_apps, 0 as ws_championships
             FROM lahman_teams 
-            WHERE teamid = ? AND yearid = ?
+            WHERE teamid = %s AND yearid = %s
             """
             df = pd.read_sql_query(query, conn, params=(team_id, actual_year))
 
@@ -1289,7 +1302,7 @@ def handle_combined_team_stats(team_id, year, mode):
 
             if len(franchise_ids) > 1:
                 # Multiple team IDs for this franchise
-                placeholders = ",".join(["?" for _ in franchise_ids])
+                placeholders = ",".join(["%s" for _ in franchise_ids])
                 query = f"""
                 SELECT 'FRANCHISE' as teamid, 
                        COUNT(*) as seasons,
@@ -1313,7 +1326,7 @@ def handle_combined_team_stats(team_id, year, mode):
                        -- We'll calculate playoff stats separately
                        0 as playoff_apps, 0 as ws_apps, 0 as ws_championships
                 FROM lahman_teams 
-                WHERE teamid = ?
+                WHERE teamid = %s
                 GROUP BY teamid
                 """
                 df = pd.read_sql_query(query, conn, params=(team_id,))
@@ -1326,7 +1339,7 @@ def handle_combined_team_stats(team_id, year, mode):
                    g, w, l, r, ra,
                    0 as playoff_apps, 0 as ws_apps, 0 as ws_championships
             FROM lahman_teams 
-            WHERE teamid = ? AND yearid = ?
+            WHERE teamid = %s AND yearid = %s
             """
             df = pd.read_sql_query(query, conn, params=(team_id, actual_year))
 
@@ -1445,8 +1458,8 @@ def add_playoff_stats(df, team_id, year, mode, conn):
             playoff_query = """
             SELECT COUNT(*) as series_count
             FROM lahman_seriespost 
-            WHERE (teamidwinner = ? OR teamidloser = ?) 
-            AND yearid = ?
+            WHERE (teamidwinner = %s OR teamidloser = %s) 
+            AND yearid = %s
             """
 
             playoff_df = pd.read_sql_query(
@@ -1458,8 +1471,8 @@ def add_playoff_stats(df, team_id, year, mode, conn):
             ws_query = """
             SELECT COUNT(*) as ws_series
             FROM lahman_seriespost 
-            WHERE (teamidwinner = ? OR teamidloser = ?) 
-            AND yearid = ? 
+            WHERE (teamidwinner = %s OR teamidloser = %s) 
+            AND yearid = %s 
             AND round = 'WS'
             """
 
@@ -1472,8 +1485,8 @@ def add_playoff_stats(df, team_id, year, mode, conn):
             ws_win_query = """
             SELECT COUNT(*) as ws_wins
             FROM lahman_seriespost 
-            WHERE teamidwinner = ?
-            AND yearid = ? 
+            WHERE teamidwinner = %s
+            AND yearid = %s 
             AND round = 'WS'
             """
 
@@ -1487,7 +1500,7 @@ def add_playoff_stats(df, team_id, year, mode, conn):
             playoff_query = """
             SELECT COUNT(DISTINCT yearid) as playoff_years
             FROM lahman_seriespost 
-            WHERE (teamidwinner = ? OR teamidloser = ?)
+            WHERE (teamidwinner = %s OR teamidloser = %s)
             """
 
             playoff_df = pd.read_sql_query(
@@ -1499,7 +1512,7 @@ def add_playoff_stats(df, team_id, year, mode, conn):
             ws_query = """
             SELECT COUNT(DISTINCT yearid) as ws_years
             FROM lahman_seriespost 
-            WHERE (teamidwinner = ? OR teamidloser = ?) 
+            WHERE (teamidwinner = %s OR teamidloser = %s) 
             AND round = 'WS'
             """
 
@@ -1510,7 +1523,7 @@ def add_playoff_stats(df, team_id, year, mode, conn):
             ws_win_query = """
             SELECT COUNT(*) as total_ws_wins
             FROM lahman_seriespost 
-            WHERE teamidwinner = ?
+            WHERE teamidwinner = %s
             AND round = 'WS'
             """
 
@@ -2284,7 +2297,7 @@ def get_head_to_head_record(team_a, team_b, year_filter=None):
     and Retrosheet teamstats for regular season games
     """
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db_connection()
 
         # Get regular season head-to-head from Retrosheet teamstats
         regular_season_record = get_regular_season_h2h(
@@ -2296,15 +2309,15 @@ def get_head_to_head_record(team_a, team_b, year_filter=None):
         SELECT yearid, round, teamidwinner, teamidloser, wins, losses
         FROM lahman_seriespost 
         WHERE (
-            (teamidwinner = ? AND teamidloser = ?) OR 
-            (teamidwinner = ? AND teamidloser = ?)
+            (teamidwinner = %s AND teamidloser = %s) OR 
+            (teamidwinner = %s AND teamidloser = %s)
         )
         """
 
         params = [team_a, team_b, team_b, team_a]
 
         if year_filter:
-            playoff_query += " AND yearid = ?"
+            playoff_query += " AND yearid = %s"
             params.append(year_filter)
 
         playoff_df = pd.read_sql_query(playoff_query, conn, params=params)
@@ -2382,8 +2395,8 @@ def get_regular_season_h2h(conn, team_a, team_b, year_filter=None):
         win_col = "win"
 
         # Build dynamic query with franchise IDs
-        team_a_placeholders = ",".join(["?" for _ in team_a_ids])
-        team_b_placeholders = ",".join(["?" for _ in team_b_ids])
+        team_a_placeholders = ",".join(["%s" for _ in team_a_ids])
+        team_b_placeholders = ",".join(["%s" for _ in team_b_ids])
 
         base_query = f"""
         SELECT {team_col}, {opponent_col}, {year_col}, {win_col}
@@ -2398,7 +2411,7 @@ def get_regular_season_h2h(conn, team_a, team_b, year_filter=None):
         params = team_a_ids + team_b_ids + team_b_ids + team_a_ids
 
         if year_filter:
-            base_query += f" AND substr({year_col}, 1, 4) = ?"
+            base_query += f" AND substr({year_col}, 1, 4) = %s"
             params.append(str(year_filter))
 
         base_query += f" ORDER BY {year_col}, {team_col}"
