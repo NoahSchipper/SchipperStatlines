@@ -12,7 +12,7 @@ from supabase import create_client, Client
 app = Flask(__name__, static_folder="static")
 
 SUPABASE_URL = os.environ.get('SUPABASE_URL')
-SUPABASE_KEY = os.environ.get('SUPABASE_KEY_KEY')
+SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 DATABASE_URL = os.environ.get('DATABASE_URL')  # From Supabase settings
