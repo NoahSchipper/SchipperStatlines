@@ -1404,7 +1404,6 @@ def handle_combined_team_stats(team_id, year, mode):
         return jsonify({"error": f"Database error: {str(e)}"}), 500
 
 
-
 def get_franchise_team_ids(team_id):
     """
     Map current team IDs to all historical team IDs for franchise totals
@@ -2323,6 +2322,9 @@ def get_regular_season_h2h(engine, team_a, team_b, year_filter=None):
     try:
         from sqlalchemy import text, inspect
         
+        team_a_ids = get_franchise_team_ids(team_a)
+        team_b_ids = get_franchise_team_ids(team_b)
+        
         # Test basic connection and table existence
         with engine.connect() as conn:
             print("Database connection established successfully")
@@ -2380,7 +2382,6 @@ def get_regular_season_h2h(engine, team_a, team_b, year_filter=None):
             params[f"team_b_{i}"] = team_id
 
         if year_filter:
-            # Since date is an integer (YYYYMMDD format), we need to extract year differently
             base_query_str += " AND CAST(date / 10000 AS INTEGER) = :year_filter"
             params["year_filter"] = int(year_filter)
 
@@ -2528,29 +2529,32 @@ def get_head_to_head_record(team_a, team_b, year_filter=None):
             "error": str(e),
         }
 
+
 @app.route('/team/h2h')
 def team_h2h():
-    team_a_input = request.args.get('team_a')
-    team_b_input = request.args.get('team_b')
+    team_a = request.args.get('team_a')
+    team_b = request.args.get('team_b')
     year = request.args.get('year')
     
-    if not team_a_input or not team_b_input:
+    
+    
+    if not team_a or not team_b:
         return jsonify({"error": "team_a and team_b parameters required"}), 400
     
     try:
-        # Parse team inputs to extract team codes
-        team_a_code, team_a_year = parse_team_input(team_a_input)
-        team_b_code, team_b_year = parse_team_input(team_b_input)
-        
-        # Use the year from URL parameter, or from team input, or None
-        year_filter = year or team_a_year or team_b_year
-        
-        print(f"Parsed teams: {team_a_code} vs {team_b_code}, year: {year_filter}")
-        
-        # Get head-to-head record using team codes
-        h2h_data = get_head_to_head_record(team_a_code, team_b_code, year_filter)
+        # Parse team inputs to get team codes
+        team_a_id, _ = parse_team_input(team_a)
+        team_b_id, _ = parse_team_input(team_b)
+        # Get head-to-head record
+        h2h_data = get_head_to_head_record(team_a, team_b, year)
         
         return jsonify(h2h_data)
         
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)
