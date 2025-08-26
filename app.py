@@ -8,6 +8,8 @@ import os
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from supabase import create_client, Client
+from sqlalchemy import create_engine
+from sqlalchemy.pool import StaticPool
 
 app = Flask(__name__, static_folder="static")
 
@@ -25,10 +27,35 @@ CORS(app, resources={
 
 cache.enable()
 
+'''
 def get_db_connection():
     """Get PostgreSQL connection using psycopg2"""
     conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
     return conn
+'''
+def get_db_engine():
+    """Create SQLAlchemy engine for database connections"""
+    database_url = os.getenv('DATABASE_URL')
+    
+    if not database_url:
+        raise ValueError("DATABASE_URL environment variable not set")
+    
+    # For Supabase/PostgreSQL, make sure URL starts with postgresql://
+    if database_url.startswith('postgres://'):
+        database_url = database_url.replace('postgres://', 'postgresql://', 1)
+    
+    # Create engine with connection pooling
+    engine = create_engine(
+        database_url,
+        poolclass=StaticPool,
+        pool_pre_ping=True,  # Verify connections before use
+        pool_recycle=300,    # Recycle connections every 5 minutes
+        echo=False           # Set to True for SQL debugging
+    )
+    
+    return engine
+
+db_engine = get_db_engine()
 
 def get_supabase_client():
     """Get Supabase client for easier operations"""
@@ -2378,51 +2405,113 @@ def get_head_to_head_record(team_a, team_b, year_filter=None):
         }
 
 
-def get_regular_season_h2h(conn, team_a, team_b, year_filter=None):
+def get_regular_season_h2h(engine, team_a, team_b, year_filter=None):
     """
     Get regular season head-to-head record from retrosheet_teamstats
     Handles franchise moves and team ID changes
     """
+    print(f"=== Starting get_regular_season_h2h for {team_a} vs {team_b} ===")
+    
     try:
-        # DEBUG BLOCK
-        cursor = conn.cursor()
-        
-        # Check if table exists
-        cursor.execute("""
-            SELECT COUNT(*) 
-            FROM information_schema.tables 
-            WHERE table_name = 'retrosheet_teamstats'
-        """)
-        table_exists = cursor.fetchone()[0] > 0
-        print(f"retrosheet_teamstats table exists: {table_exists}")
-        
-        if table_exists:
-            # Check column names
-            cursor.execute("""
-                SELECT column_name 
-                FROM information_schema.columns 
-                WHERE table_name = 'retrosheet_teamstats'
-            """)
-            columns = [row[0] for row in cursor.fetchall()]
-            print(f"retrosheet_teamstats columns: {columns}")
+        # Test basic connection first
+        with engine.connect() as conn:
+            print("Database connection established successfully")
             
+            # Test a simple query first
+            try:
+                test_result = conn.execute("SELECT 1 as test").fetchone()
+                print(f"Basic query test result: {test_result}")
+            except Exception as e:
+                print(f"Basic query failed: {e}")
+                return {"error": f"Database connection test failed: {e}"}
+            
+            # Check if table exists
+            try:
+                result = conn.execute("""
+                    SELECT EXISTS (
+                       SELECT FROM information_schema.tables 
+                       WHERE table_schema = 'public'
+                       AND table_name = 'retrosheet_teamstats'
+                    )
+                """).fetchone()
+                table_exists = result[0]
+                print(f"retrosheet_teamstats table exists: {table_exists}")
+            except Exception as e:
+                print(f"Table existence check failed: {e}")
+                # Try alternative method
+                try:
+                    conn.execute("SELECT COUNT(*) FROM retrosheet_teamstats LIMIT 1")
+                    table_exists = True
+                    print("Table exists (confirmed via direct query)")
+                except Exception as e2:
+                    print(f"Alternative table check also failed: {e2}")
+                    return {"error": f"Cannot access retrosheet_teamstats table: {e2}"}
+            
+            if not table_exists:
+                print("retrosheet_teamstats table does not exist")
+                return {"error": "retrosheet_teamstats table not found"}
+                
+            # Check column names
+            try:
+                result = conn.execute("""
+                    SELECT column_name 
+                    FROM information_schema.columns 
+                    WHERE table_schema = 'public'
+                    AND table_name = 'retrosheet_teamstats'
+                    ORDER BY ordinal_position
+                """)
+                columns = [row[0] for row in result]
+                print(f"retrosheet_teamstats columns: {columns}")
+                
+                if not columns:
+                    print("No columns found - this shouldn't happen if table exists")
+                    return {"error": "Could not retrieve column information"}
+                    
+            except Exception as e:
+                print(f"Column check failed: {e}")
+                return {"error": f"Column check failed: {e}"}
+                
             # Check total row count
-            cursor.execute("SELECT COUNT(*) FROM retrosheet_teamstats")
-            total_rows = cursor.fetchone()[0]
-            print(f"Total rows in retrosheet_teamstats: {total_rows}")
-        # END DEBUG BLOCK
+            try:
+                result = conn.execute("SELECT COUNT(*) FROM retrosheet_teamstats")
+                total_rows = result.fetchone()[0]
+                print(f"Total rows in retrosheet_teamstats: {total_rows}")
+                
+                if total_rows == 0:
+                    print("Table is empty!")
+                    return {"team_a_wins": 0, "team_b_wins": 0, "ties": 0, "total_games": 0, "error": "Table is empty"}
+                    
+            except Exception as e:
+                print(f"Row count check failed: {e}")
+                return {"error": f"Row count check failed: {e}"}
 
+            # Check sample data
+            try:
+                result = conn.execute("SELECT * FROM retrosheet_teamstats LIMIT 3")
+                sample_rows = result.fetchall()
+                print(f"Sample rows count: {len(sample_rows)}")
+                if sample_rows:
+                    print(f"First sample row: {sample_rows[0]}")
+            except Exception as e:
+                print(f"Sample data check failed: {e}")
+
+        # Now proceed with the main logic using pandas (outside the connection context)
         team_a_ids = get_franchise_team_ids(team_a)
         team_b_ids = get_franchise_team_ids(team_b)
         
-        print(f"Team A IDs: {team_a_ids}, Team B IDs: {team_b_ids}")  # Debug
+        print(f"Team A ({team_a}) IDs: {team_a_ids}")
+        print(f"Team B ({team_b}) IDs: {team_b_ids}")
 
-        # Column mapping (simplified)
+        # Column mapping
         team_col = "team"
         opponent_col = "opp"
         year_col = "date"
         win_col = "win"
 
+        # Verify these columns exist
+        required_cols = [team_col, opponent_col, year_col, win_col]
+        # Note: You'll need to get columns list here again, or pass it from above
+        
         # Build dynamic query with franchise IDs
         team_a_placeholders = ",".join(["%s" for _ in team_a_ids])
         team_b_placeholders = ",".join(["%s" for _ in team_b_ids])
@@ -2445,13 +2534,23 @@ def get_regular_season_h2h(conn, team_a, team_b, year_filter=None):
 
         base_query += f" ORDER BY {year_col}, {team_col}"
         
-        print(f"Final query: {base_query}")  # Debug
-        print(f"Query params: {params}")     # Debug
+        print(f"Final query: {base_query}")
+        print(f"Query params: {params}")
 
-        games_df = pd.read_sql_query(base_query, conn, params=params)
-        print(f"Query returned {len(games_df)} rows")  # Debug
+        # Execute query using pandas with SQLAlchemy engine
+        try:
+            games_df = pd.read_sql_query(base_query, engine, params=params)
+            print(f"Query executed successfully, returned {len(games_df)} rows")
+            
+            if not games_df.empty:
+                print(f"Sample results:\n{games_df.head()}")
+                
+        except Exception as e:
+            print(f"Query execution failed: {e}")
+            return {"error": f"Query failed: {e}"}
 
         if games_df.empty:
+            print("No games found between these teams")
             return {"team_a_wins": 0, "team_b_wins": 0, "ties": 0, "total_games": 0}
 
         # Count wins for each franchise
@@ -2470,15 +2569,20 @@ def get_regular_season_h2h(conn, team_a, team_b, year_filter=None):
 
         total_games = len(games_df) // 2
 
-        return {
+        result = {
             "team_a_wins": team_a_wins,
             "team_b_wins": team_b_wins,
             "ties": 0,
             "total_games": total_games,
         }
+        
+        print(f"Final result: {result}")
+        return result
 
     except Exception as e:
-        print(f"get_regular_season_h2h error: {str(e)}")  # Debug
+        print(f"get_regular_season_h2h error: {str(e)}")
+        import traceback
+        print(f"Full traceback: {traceback.format_exc()}")
         return {
             "team_a_wins": 0,
             "team_b_wins": 0,
@@ -2489,43 +2593,27 @@ def get_regular_season_h2h(conn, team_a, team_b, year_filter=None):
 
 
 
-@app.route("/team/h2h")
-def get_team_head_to_head():
-    """Get head-to-head record between two teams"""
+@app.route('/team/h2h')
+def team_h2h():
+    team_a = request.args.get('team_a')
+    team_b = request.args.get('team_b')
+    year = request.args.get('year')
+    
+    if not team_a or not team_b:
+        return jsonify({"error": "team_a and team_b parameters required"}), 400
+    
     try:
-        team_a = request.args.get("team_a", "").strip()
-        team_b = request.args.get("team_b", "").strip()
-        year = request.args.get("year")  # Optional year filter
-
-        if not team_a or not team_b:
-            return jsonify({"error": "Both team_a and team_b required"}), 400
-
-        # Parse team inputs
-        team_a_id, _ = parse_team_input(team_a)
-        team_b_id, _ = parse_team_input(team_b)
-
-        year_filter = None
-        if year and year.isdigit():
-            year_filter = int(year)
-
-        h2h_record = get_head_to_head_record(team_a_id, team_b_id, year_filter)
-
-        # Get team names for better display
-        team_a_name = get_team_name(team_a_id)
-        team_b_name = get_team_name(team_b_id)
-
-        return jsonify(
-            {
-                "team_a": {"id": team_a_id, "name": team_a_name},
-                "team_b": {"id": team_b_id, "name": team_b_name},
-                "year_filter": year_filter,
-                "head_to_head": h2h_record,
-                "status": "success",
-            }
-        )
-
+        # Use the global engine instead of creating a connection
+        regular_season = get_regular_season_h2h(db_engine, team_a, team_b, year)
+        playoff_data = get_head_to_head_record(db_engine, team_a, team_b, year)
+        
+        return jsonify({
+            "regular_season": regular_season,
+            "playoff": playoff_data
+        })
+        
     except Exception as e:
-        return jsonify({"error": f"H2H lookup error: {str(e)}"}), 500
+        return jsonify({"error": str(e)}), 500
 
 
 if __name__ == "__main__":
