@@ -2384,6 +2384,46 @@ def get_regular_season_h2h(conn, team_a, team_b, year_filter=None):
     Handles franchise moves and team ID changes
     """
     try:
+        # ADD THIS DEBUG BLOCK FIRST
+        cursor = conn.cursor()
+        
+        # Check if table exists
+        cursor.execute("""
+            SELECT COUNT(*) 
+            FROM information_schema.tables 
+            WHERE table_name = 'retrosheet_teamstats'
+        """)
+        table_exists = cursor.fetchone()[0] > 0
+        print(f"retrosheet_teamstats table exists: {table_exists}")
+        
+        if table_exists:
+            # Check column names
+            cursor.execute("""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name = 'retrosheet_teamstats'
+            """)
+            columns = [row[0] for row in cursor.fetchall()]
+            print(f"retrosheet_teamstats columns: {columns}")
+            
+            # Check total row count
+            cursor.execute("SELECT COUNT(*) FROM retrosheet_teamstats")
+            total_rows = cursor.fetchone()[0]
+            print(f"Total rows in retrosheet_teamstats: {total_rows}")
+        
+        # END DEBUG BLOCK
+
+        team_a_ids = get_franchise_team_ids(team_a)
+        team_b_ids = get_franchise_team_ids(team_b)
+        
+        print(f"Team A IDs: {team_a_ids}, Team B IDs: {team_b_ids}")  # Debug
+
+        # Column mapping (simplified)
+        team_col = "team"
+        opponent_col = "opp"
+        year_col = "date"
+        win_col = "win"
+        
 
         team_a_ids = get_franchise_team_ids(team_a)
         team_b_ids = get_franchise_team_ids(team_b)
