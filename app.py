@@ -2384,7 +2384,7 @@ def get_regular_season_h2h(conn, team_a, team_b, year_filter=None):
     Handles franchise moves and team ID changes
     """
     try:
-        # ADD THIS DEBUG BLOCK FIRST
+        # DEBUG BLOCK
         cursor = conn.cursor()
         
         # Check if table exists
@@ -2410,23 +2410,12 @@ def get_regular_season_h2h(conn, team_a, team_b, year_filter=None):
             cursor.execute("SELECT COUNT(*) FROM retrosheet_teamstats")
             total_rows = cursor.fetchone()[0]
             print(f"Total rows in retrosheet_teamstats: {total_rows}")
-        
         # END DEBUG BLOCK
 
         team_a_ids = get_franchise_team_ids(team_a)
         team_b_ids = get_franchise_team_ids(team_b)
         
         print(f"Team A IDs: {team_a_ids}, Team B IDs: {team_b_ids}")  # Debug
-
-        # Column mapping (simplified)
-        team_col = "team"
-        opponent_col = "opp"
-        year_col = "date"
-        win_col = "win"
-        
-
-        team_a_ids = get_franchise_team_ids(team_a)
-        team_b_ids = get_franchise_team_ids(team_b)
 
         # Column mapping (simplified)
         team_col = "team"
@@ -2455,8 +2444,12 @@ def get_regular_season_h2h(conn, team_a, team_b, year_filter=None):
             params.append(str(year_filter))
 
         base_query += f" ORDER BY {year_col}, {team_col}"
+        
+        print(f"Final query: {base_query}")  # Debug
+        print(f"Query params: {params}")     # Debug
 
         games_df = pd.read_sql_query(base_query, conn, params=params)
+        print(f"Query returned {len(games_df)} rows")  # Debug
 
         if games_df.empty:
             return {"team_a_wins": 0, "team_b_wins": 0, "ties": 0, "total_games": 0}
@@ -2485,6 +2478,7 @@ def get_regular_season_h2h(conn, team_a, team_b, year_filter=None):
         }
 
     except Exception as e:
+        print(f"get_regular_season_h2h error: {str(e)}")  # Debug
         return {
             "team_a_wins": 0,
             "team_b_wins": 0,
@@ -2492,6 +2486,7 @@ def get_regular_season_h2h(conn, team_a, team_b, year_filter=None):
             "total_games": 0,
             "error": str(e),
         }
+
 
 
 @app.route("/team/h2h")
