@@ -8,7 +8,7 @@ import os
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from supabase import create_client, Client
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text, inspect
 from sqlalchemy.pool import StaticPool
 
 app = Flask(__name__, static_folder="static")
@@ -47,7 +47,6 @@ def get_db_engine():
     # Create engine with connection pooling
     engine = create_engine(
         database_url,
-        poolclass=StaticPool,
         pool_pre_ping=True,  # Verify connections before use
         pool_recycle=300,    # Recycle connections every 5 minutes
         echo=False           # Set to True for SQL debugging
@@ -1302,35 +1301,35 @@ def get_team_stats():
 
 
 def handle_combined_team_stats(team_id, year, mode):
-    """Get both batting and pitching stats in one query - updated for StatHead format"""
+    """Get both batting and pitching stats in one query - updated for SQLAlchemy"""
     try:
-        conn = get_db_connection()
-
+        # Use SQLAlchemy engine directly instead of get_db_connection()
+        from sqlalchemy import text
+        
         # Track the actual year being used
         actual_year = None
 
         if mode == "season":
             actual_year = year or 2024
-            query = """
+            query = text("""
             SELECT yearid, teamid, 
                    -- Basic team stats
                    g, w, l, r, ra,
                    -- We'll calculate playoff stats separately
                    0 as playoff_apps, 0 as ws_apps, 0 as ws_championships
             FROM lahman_teams 
-            WHERE teamid = %s AND yearid = %s
-            """
-            df = pd.read_sql_query(query, conn, params=(team_id, actual_year))
+            WHERE teamid = :team_id AND yearid = :year
+            """)
+            df = pd.read_sql_query(query, db_engine, params={"team_id": team_id, "year": actual_year})
 
         elif mode in ["franchise", "career", "overall"]:
-
             # Check for franchise moves - Milwaukee Brewers example
             franchise_ids = get_franchise_team_ids(team_id)
 
             if len(franchise_ids) > 1:
                 # Multiple team IDs for this franchise
-                placeholders = ",".join(["%s" for _ in franchise_ids])
-                query = f"""
+                placeholders = ",".join([f":team_id_{i}" for i in range(len(franchise_ids))])
+                query_str = f"""
                 SELECT 'FRANCHISE' as teamid, 
                        COUNT(*) as seasons,
                        -- Basic aggregates
@@ -1341,10 +1340,12 @@ def handle_combined_team_stats(team_id, year, mode):
                 FROM lahman_teams 
                 WHERE teamid IN ({placeholders})
                 """
-                df = pd.read_sql_query(query, conn, params=franchise_ids)
+                query = text(query_str)
+                params = {f"team_id_{i}": team_id for i, team_id in enumerate(franchise_ids)}
+                df = pd.read_sql_query(query, db_engine, params=params)
             else:
                 # Single team ID
-                query = """
+                query = text("""
                 SELECT teamid, 
                        COUNT(*) as seasons,
                        -- Basic aggregates
@@ -1353,30 +1354,29 @@ def handle_combined_team_stats(team_id, year, mode):
                        -- We'll calculate playoff stats separately
                        0 as playoff_apps, 0 as ws_apps, 0 as ws_championships
                 FROM lahman_teams 
-                WHERE teamid = %s
+                WHERE teamid = :team_id
                 GROUP BY teamid
-                """
-                df = pd.read_sql_query(query, conn, params=(team_id,))
+                """)
+                df = pd.read_sql_query(query, db_engine, params={"team_id": team_id})
 
         else:
             # Default to season
             actual_year = year or 2024
-            query = """
+            query = text("""
             SELECT yearid, teamid, 
                    g, w, l, r, ra,
                    0 as playoff_apps, 0 as ws_apps, 0 as ws_championships
             FROM lahman_teams 
-            WHERE teamid = %s AND yearid = %s
-            """
-            df = pd.read_sql_query(query, conn, params=(team_id, actual_year))
+            WHERE teamid = :team_id AND yearid = :year
+            """)
+            df = pd.read_sql_query(query, db_engine, params={"team_id": team_id, "year": actual_year})
 
         if not df.empty:
             # Add playoff statistics - pass actual_year for season mode
             df = add_playoff_stats(
-                df, team_id, actual_year if mode == "season" else year, mode, conn
+                df, team_id, actual_year if mode == "season" else year, mode
             )
 
-        conn.close()
         if df.empty:
             if mode in ["franchise", "career", "overall"]:
                 return (
@@ -1400,7 +1400,6 @@ def handle_combined_team_stats(team_id, year, mode):
 
     except Exception as e:
         import traceback
-
         traceback.print_exc()
         return jsonify({"error": f"Database error: {str(e)}"}), 500
 
@@ -1474,88 +1473,84 @@ def get_franchise_team_ids(team_id):
     return franchise_mapping.get(team_id, [team_id])
 
 
-def add_playoff_stats(df, team_id, year, mode, conn):
+def add_playoff_stats(df, team_id, year, mode):
     """Add playoff appearance and World Series statistics using lahman_seriespost"""
     try:
+        from sqlalchemy import text
+        
         if mode == "season":
             # For single season, check if team made playoffs that year
             actual_year = year or 2024
 
             # Check if they appeared in any playoff series that year
-            playoff_query = """
+            playoff_query = text("""
             SELECT COUNT(*) as series_count
             FROM lahman_seriespost 
-            WHERE (teamidwinner = %s OR teamidloser = %s) 
-            AND yearid = %s
-            """
+            WHERE (teamidwinner = :team_id OR teamidloser = :team_id) 
+            AND yearid = :year
+            """)
 
-            playoff_df = pd.read_sql_query(
-                playoff_query, conn, params=(team_id, team_id, actual_year)
-            )
-            playoff_apps = 1 if playoff_df.iloc[0]["series_count"] > 0 else 0
+            with db_engine.connect() as conn:
+                result = conn.execute(playoff_query, {"team_id": team_id, "year": actual_year})
+                playoff_apps = 1 if result.fetchone()[0] > 0 else 0
 
-            # Check World Series appearances
-            ws_query = """
-            SELECT COUNT(*) as ws_series
-            FROM lahman_seriespost 
-            WHERE (teamidwinner = %s OR teamidloser = %s) 
-            AND yearid = %s 
-            AND round = 'WS'
-            """
+                # Check World Series appearances
+                ws_query = text("""
+                SELECT COUNT(*) as ws_series
+                FROM lahman_seriespost 
+                WHERE (teamidwinner = :team_id OR teamidloser = :team_id) 
+                AND yearid = :year 
+                AND round = 'WS'
+                """)
 
-            ws_df = pd.read_sql_query(
-                ws_query, conn, params=(team_id, team_id, actual_year)
-            )
-            ws_apps = 1 if ws_df.iloc[0]["ws_series"] > 0 else 0
+                result = conn.execute(ws_query, {"team_id": team_id, "year": actual_year})
+                ws_apps = 1 if result.fetchone()[0] > 0 else 0
 
-            # Check World Series wins
-            ws_win_query = """
-            SELECT COUNT(*) as ws_wins
-            FROM lahman_seriespost 
-            WHERE teamidwinner = %s
-            AND yearid = %s 
-            AND round = 'WS'
-            """
+                # Check World Series wins
+                ws_win_query = text("""
+                SELECT COUNT(*) as ws_wins
+                FROM lahman_seriespost 
+                WHERE teamidwinner = :team_id
+                AND yearid = :year 
+                AND round = 'WS'
+                """)
 
-            ws_win_df = pd.read_sql_query(
-                ws_win_query, conn, params=(team_id, actual_year)
-            )
-            ws_championships = ws_win_df.iloc[0]["ws_wins"]
+                result = conn.execute(ws_win_query, {"team_id": team_id, "year": actual_year})
+                ws_championships = result.fetchone()[0]
 
         else:
             # For franchise/career mode, count all playoff appearances
-            playoff_query = """
-            SELECT COUNT(DISTINCT yearid) as playoff_years
-            FROM lahman_seriespost 
-            WHERE (teamidwinner = %s OR teamidloser = %s)
-            """
+            with db_engine.connect() as conn:
+                playoff_query = text("""
+                SELECT COUNT(DISTINCT yearid) as playoff_years
+                FROM lahman_seriespost 
+                WHERE (teamidwinner = :team_id OR teamidloser = :team_id)
+                """)
 
-            playoff_df = pd.read_sql_query(
-                playoff_query, conn, params=(team_id, team_id)
-            )
-            playoff_apps = playoff_df.iloc[0]["playoff_years"]
+                result = conn.execute(playoff_query, {"team_id": team_id})
+                playoff_apps = result.fetchone()[0]
 
-            # Count World Series appearances
-            ws_query = """
-            SELECT COUNT(DISTINCT yearid) as ws_years
-            FROM lahman_seriespost 
-            WHERE (teamidwinner = %s OR teamidloser = %s) 
-            AND round = 'WS'
-            """
+                # Count World Series appearances
+                ws_query = text("""
+                SELECT COUNT(DISTINCT yearid) as ws_years
+                FROM lahman_seriespost 
+                WHERE (teamidwinner = :team_id OR teamidloser = :team_id) 
+                AND round = 'WS'
+                """)
 
-            ws_df = pd.read_sql_query(ws_query, conn, params=(team_id, team_id))
-            ws_apps = ws_df.iloc[0]["ws_years"]
+                result = conn.execute(ws_query, {"team_id": team_id})
+                ws_apps = result.fetchone()[0]
 
-            # Count World Series championships
-            ws_win_query = """
-            SELECT COUNT(*) as total_ws_wins
-            FROM lahman_seriespost 
-            WHERE teamidwinner = %s
-            AND round = 'WS'
-            """
+                # Count World Series championships
+                ws_win_query = text("""
+                SELECT COUNT(*) as total_ws_wins
+                FROM lahman_seriespost 
+                WHERE teamidwinner = :team_id
+                AND round = 'WS'
+                """)
 
-            ws_win_df = pd.read_sql_query(ws_win_query, conn, params=(team_id,))
-            ws_championships = ws_win_df.iloc[0]["total_ws_wins"]
+                result = conn.execute(ws_win_query, {"team_id": team_id})
+                ws_championships = result.fetchone()[0]
 
         df.loc[0, "playoff_apps"] = playoff_apps
         df.loc[0, "ws_apps"] = ws_apps
@@ -1565,7 +1560,6 @@ def add_playoff_stats(df, team_id, year, mode, conn):
 
     except Exception as e:
         import traceback
-
         traceback.print_exc()
         # Return original df with zeros for playoff stats
         df.loc[0, "playoff_apps"] = 0
@@ -2318,38 +2312,168 @@ def format_and_round_stats(stats_dict):
     return formatted_stats
 
 
-def get_head_to_head_record(team_a, team_b, year_filter=None):
+def get_regular_season_h2h(engine, team_a, team_b, year_filter=None):
     """
-    Get head-to-head record between two teams using Lahman database structure
-    and Retrosheet teamstats for regular season games
+    Get regular season head-to-head record from retrosheet_teamstats
+    Updated to use SQLAlchemy properly
     """
+    print(f"=== Starting get_regular_season_h2h for {team_a} vs {team_b} ===")
+    
     try:
-        conn = get_db_connection()
+        from sqlalchemy import text, inspect
+        
+        # Test basic connection and table existence
+        with engine.connect() as conn:
+            print("Database connection established successfully")
+            
+            # Check if table exists using inspector
+            inspector = inspect(engine)
+            tables = inspector.get_table_names()
+            
+            if 'retrosheet_teamstats' not in tables:
+                print("retrosheet_teamstats table does not exist")
+                return {"error": "retrosheet_teamstats table not found"}
+            
+            print("retrosheet_teamstats table exists")
+            
+            # Check columns
+            columns = inspector.get_columns('retrosheet_teamstats')
+            column_names = [col['name'] for col in columns]
+            print(f"retrosheet_teamstats columns: {column_names}")
+            
+            # Check total row count
+            count_query = text("SELECT COUNT(*) FROM retrosheet_teamstats")
+            result = conn.execute(count_query)
+            total_rows = result.fetchone()[0]
+            print(f"Total rows in retrosheet_teamstats: {total_rows}")
+            
+            if total_rows == 0:
+                print("Table is empty!")
+                return {"team_a_wins": 0, "team_b_wins": 0, "ties": 0, "total_games": 0, "error": "Table is empty"}
 
-        # Get regular season head-to-head from Retrosheet teamstats
-        regular_season_record = get_regular_season_h2h(
-            conn, team_a, team_b, year_filter
-        )
+        # Get franchise team IDs
+        team_a_ids = get_franchise_team_ids(team_a)
+        team_b_ids = get_franchise_team_ids(team_b)
+        
+        print(f"Team A ({team_a}) IDs: {team_a_ids}")
+        print(f"Team B ({team_b}) IDs: {team_b_ids}")
 
-        # Get playoff data (your existing code)
-        playoff_query = """
-        SELECT yearid, round, teamidwinner, teamidloser, wins, losses
-        FROM lahman_seriespost 
+        # Build dynamic query with named parameters
+        team_a_placeholders = ",".join([f":team_a_{i}" for i in range(len(team_a_ids))])
+        team_b_placeholders = ",".join([f":team_b_{i}" for i in range(len(team_b_ids))])
+
+        base_query_str = f"""
+        SELECT team, opp, date, win
+        FROM retrosheet_teamstats 
         WHERE (
-            (teamidwinner = %s AND teamidloser = %s) OR 
-            (teamidwinner = %s AND teamidloser = %s)
+            (team IN ({team_a_placeholders}) AND opp IN ({team_b_placeholders})) OR 
+            (team IN ({team_b_placeholders}) AND opp IN ({team_a_placeholders}))
         )
         """
 
-        params = [team_a, team_b, team_b, team_a]
+        # Build parameter dictionary
+        params = {}
+        for i, team_id in enumerate(team_a_ids):
+            params[f"team_a_{i}"] = team_id
+        for i, team_id in enumerate(team_b_ids):
+            params[f"team_b_{i}"] = team_id
 
         if year_filter:
-            playoff_query += " AND yearid = %s"
-            params.append(year_filter)
+            base_query_str += " AND SUBSTRING(date, 1, 4) = :year_filter"
+            params["year_filter"] = str(year_filter)
 
-        playoff_df = pd.read_sql_query(playoff_query, conn, params=params)
+        base_query_str += " ORDER BY date, team"
+        
+        print(f"Final query: {base_query_str}")
+        print(f"Query params: {params}")
 
-        # Process playoff data (your existing logic)
+        # Execute query using SQLAlchemy text and pandas
+        query = text(base_query_str)
+        games_df = pd.read_sql_query(query, engine, params=params)
+        print(f"Query executed successfully, returned {len(games_df)} rows")
+        
+        if not games_df.empty:
+            print(f"Sample results:\n{games_df.head()}")
+
+        if games_df.empty:
+            print("No games found between these teams")
+            return {"team_a_wins": 0, "team_b_wins": 0, "ties": 0, "total_games": 0}
+
+        # Count wins for each franchise
+        team_a_wins = 0
+        team_b_wins = 0
+
+        for _, row in games_df.iterrows():
+            game_winner = row['team']
+            game_win_flag = row['win']
+
+            if game_win_flag == 1:  # This team won
+                if game_winner in team_a_ids:
+                    team_a_wins += 1
+                elif game_winner in team_b_ids:
+                    team_b_wins += 1
+
+        total_games = len(games_df) // 2
+
+        result = {
+            "team_a_wins": team_a_wins,
+            "team_b_wins": team_b_wins,
+            "ties": 0,
+            "total_games": total_games,
+        }
+        
+        print(f"Final result: {result}")
+        return result
+
+    except Exception as e:
+        print(f"get_regular_season_h2h error: {str(e)}")
+        import traceback
+        print(f"Full traceback: {traceback.format_exc()}")
+        return {
+            "team_a_wins": 0,
+            "team_b_wins": 0,
+            "ties": 0,
+            "total_games": 0,
+            "error": str(e),
+        }
+
+
+def get_head_to_head_record(team_a, team_b, year_filter=None):
+    """
+    Get head-to-head record between two teams using SQLAlchemy
+    """
+    try:
+        from sqlalchemy import text
+        
+        # Get regular season head-to-head 
+        regular_season_record = get_regular_season_h2h(db_engine, team_a, team_b, year_filter)
+
+        # Get playoff data using SQLAlchemy
+        playoff_query = text("""
+        SELECT yearid, round, teamidwinner, teamidloser, wins, losses
+        FROM lahman_seriespost 
+        WHERE (
+            (teamidwinner = :team_a AND teamidloser = :team_b) OR 
+            (teamidwinner = :team_b AND teamidloser = :team_a)
+        )
+        """)
+
+        params = {"team_a": team_a, "team_b": team_b}
+
+        if year_filter:
+            playoff_query = text("""
+            SELECT yearid, round, teamidwinner, teamidloser, wins, losses
+            FROM lahman_seriespost 
+            WHERE (
+                (teamidwinner = :team_a AND teamidloser = :team_b) OR 
+                (teamidwinner = :team_b AND teamidloser = :team_a)
+            ) AND yearid = :year_filter
+            """)
+            params["year_filter"] = year_filter
+
+        playoff_df = pd.read_sql_query(playoff_query, db_engine, params=params)
+
+        # Process playoff data
         team_a_series_wins = len(playoff_df[playoff_df["teamidwinner"] == team_a])
         team_b_series_wins = len(playoff_df[playoff_df["teamidwinner"] == team_b])
 
@@ -2389,8 +2513,6 @@ def get_head_to_head_record(team_a, team_b, year_filter=None):
             "series_details": series_details,
         }
 
-        conn.close()
-
         return {
             "regular_season": regular_season_record,
             "playoffs": playoff_record,
@@ -2405,194 +2527,6 @@ def get_head_to_head_record(team_a, team_b, year_filter=None):
         }
 
 
-def get_regular_season_h2h(engine, team_a, team_b, year_filter=None):
-    """
-    Get regular season head-to-head record from retrosheet_teamstats
-    Handles franchise moves and team ID changes
-    """
-    print(f"=== Starting get_regular_season_h2h for {team_a} vs {team_b} ===")
-    
-    try:
-        # Test basic connection first
-        with engine.connect() as conn:
-            print("Database connection established successfully")
-            
-            # Test a simple query first
-            try:
-                test_result = conn.execute("SELECT 1 as test").fetchone()
-                print(f"Basic query test result: {test_result}")
-            except Exception as e:
-                print(f"Basic query failed: {e}")
-                return {"error": f"Database connection test failed: {e}"}
-            
-            # Check if table exists
-            try:
-                result = conn.execute("""
-                    SELECT EXISTS (
-                       SELECT FROM information_schema.tables 
-                       WHERE table_schema = 'public'
-                       AND table_name = 'retrosheet_teamstats'
-                    )
-                """).fetchone()
-                table_exists = result[0]
-                print(f"retrosheet_teamstats table exists: {table_exists}")
-            except Exception as e:
-                print(f"Table existence check failed: {e}")
-                # Try alternative method
-                try:
-                    conn.execute("SELECT COUNT(*) FROM retrosheet_teamstats LIMIT 1")
-                    table_exists = True
-                    print("Table exists (confirmed via direct query)")
-                except Exception as e2:
-                    print(f"Alternative table check also failed: {e2}")
-                    return {"error": f"Cannot access retrosheet_teamstats table: {e2}"}
-            
-            if not table_exists:
-                print("retrosheet_teamstats table does not exist")
-                return {"error": "retrosheet_teamstats table not found"}
-                
-            # Check column names
-            try:
-                result = conn.execute("""
-                    SELECT column_name 
-                    FROM information_schema.columns 
-                    WHERE table_schema = 'public'
-                    AND table_name = 'retrosheet_teamstats'
-                    ORDER BY ordinal_position
-                """)
-                columns = [row[0] for row in result]
-                print(f"retrosheet_teamstats columns: {columns}")
-                
-                if not columns:
-                    print("No columns found - this shouldn't happen if table exists")
-                    return {"error": "Could not retrieve column information"}
-                    
-            except Exception as e:
-                print(f"Column check failed: {e}")
-                return {"error": f"Column check failed: {e}"}
-                
-            # Check total row count
-            try:
-                result = conn.execute("SELECT COUNT(*) FROM retrosheet_teamstats")
-                total_rows = result.fetchone()[0]
-                print(f"Total rows in retrosheet_teamstats: {total_rows}")
-                
-                if total_rows == 0:
-                    print("Table is empty!")
-                    return {"team_a_wins": 0, "team_b_wins": 0, "ties": 0, "total_games": 0, "error": "Table is empty"}
-                    
-            except Exception as e:
-                print(f"Row count check failed: {e}")
-                return {"error": f"Row count check failed: {e}"}
-
-            # Check sample data
-            try:
-                result = conn.execute("SELECT * FROM retrosheet_teamstats LIMIT 3")
-                sample_rows = result.fetchall()
-                print(f"Sample rows count: {len(sample_rows)}")
-                if sample_rows:
-                    print(f"First sample row: {sample_rows[0]}")
-            except Exception as e:
-                print(f"Sample data check failed: {e}")
-
-        # Now proceed with the main logic using pandas (outside the connection context)
-        team_a_ids = get_franchise_team_ids(team_a)
-        team_b_ids = get_franchise_team_ids(team_b)
-        
-        print(f"Team A ({team_a}) IDs: {team_a_ids}")
-        print(f"Team B ({team_b}) IDs: {team_b_ids}")
-
-        # Column mapping
-        team_col = "team"
-        opponent_col = "opp"
-        year_col = "date"
-        win_col = "win"
-
-        # Verify these columns exist
-        required_cols = [team_col, opponent_col, year_col, win_col]
-        # Note: You'll need to get columns list here again, or pass it from above
-        
-        # Build dynamic query with franchise IDs
-        team_a_placeholders = ",".join(["%s" for _ in team_a_ids])
-        team_b_placeholders = ",".join(["%s" for _ in team_b_ids])
-
-        base_query = f"""
-        SELECT {team_col}, {opponent_col}, {year_col}, {win_col}
-        FROM retrosheet_teamstats 
-        WHERE (
-            ({team_col} IN ({team_a_placeholders}) AND {opponent_col} IN ({team_b_placeholders})) OR 
-            ({team_col} IN ({team_b_placeholders}) AND {opponent_col} IN ({team_a_placeholders}))
-        )
-        """
-
-        # Build parameter list
-        params = team_a_ids + team_b_ids + team_b_ids + team_a_ids
-
-        if year_filter:
-            base_query += f" AND SUBSTRING({year_col}, 1, 4) = %s"
-            params.append(str(year_filter))
-
-        base_query += f" ORDER BY {year_col}, {team_col}"
-        
-        print(f"Final query: {base_query}")
-        print(f"Query params: {params}")
-
-        # Execute query using pandas with SQLAlchemy engine
-        try:
-            games_df = pd.read_sql_query(base_query, engine, params=params)
-            print(f"Query executed successfully, returned {len(games_df)} rows")
-            
-            if not games_df.empty:
-                print(f"Sample results:\n{games_df.head()}")
-                
-        except Exception as e:
-            print(f"Query execution failed: {e}")
-            return {"error": f"Query failed: {e}"}
-
-        if games_df.empty:
-            print("No games found between these teams")
-            return {"team_a_wins": 0, "team_b_wins": 0, "ties": 0, "total_games": 0}
-
-        # Count wins for each franchise
-        team_a_wins = 0
-        team_b_wins = 0
-
-        for _, row in games_df.iterrows():
-            game_winner = row[team_col]
-            game_win_flag = row[win_col]
-
-            if game_win_flag == 1:  # This team won
-                if game_winner in team_a_ids:
-                    team_a_wins += 1
-                elif game_winner in team_b_ids:
-                    team_b_wins += 1
-
-        total_games = len(games_df) // 2
-
-        result = {
-            "team_a_wins": team_a_wins,
-            "team_b_wins": team_b_wins,
-            "ties": 0,
-            "total_games": total_games,
-        }
-        
-        print(f"Final result: {result}")
-        return result
-
-    except Exception as e:
-        print(f"get_regular_season_h2h error: {str(e)}")
-        import traceback
-        print(f"Full traceback: {traceback.format_exc()}")
-        return {
-            "team_a_wins": 0,
-            "team_b_wins": 0,
-            "ties": 0,
-            "total_games": 0,
-            "error": str(e),
-        }
-
-
-
 @app.route('/team/h2h')
 def team_h2h():
     team_a = request.args.get('team_a')
@@ -2603,17 +2537,14 @@ def team_h2h():
         return jsonify({"error": "team_a and team_b parameters required"}), 400
     
     try:
-        # Use the global engine instead of creating a connection
-        regular_season = get_regular_season_h2h(db_engine, team_a, team_b, year)
-        playoff_data = get_head_to_head_record(db_engine, team_a, team_b, year)
+        # Get head-to-head record
+        h2h_data = get_head_to_head_record(team_a, team_b, year)
         
-        return jsonify({
-            "regular_season": regular_season,
-            "playoff": playoff_data
-        })
+        return jsonify(h2h_data)
         
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
 
 
 if __name__ == "__main__":
