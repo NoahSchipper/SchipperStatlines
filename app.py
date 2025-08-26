@@ -2411,7 +2411,7 @@ def get_regular_season_h2h(conn, team_a, team_b, year_filter=None):
         params = team_a_ids + team_b_ids + team_b_ids + team_a_ids
 
         if year_filter:
-            base_query += f" AND substr({year_col}, 1, 4) = %s"
+            base_query += f" AND SUBSTRING({year_col}, 1, 4) = %s"
             params.append(str(year_filter))
 
         base_query += f" ORDER BY {year_col}, {team_col}"
