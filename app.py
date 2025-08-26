@@ -2536,8 +2536,6 @@ def team_h2h():
     team_b = request.args.get('team_b')
     year = request.args.get('year')
     
-    
-    
     if not team_a or not team_b:
         return jsonify({"error": "team_a and team_b parameters required"}), 400
     
@@ -2545,8 +2543,9 @@ def team_h2h():
         # Parse team inputs to get team codes
         team_a_id, _ = parse_team_input(team_a)
         team_b_id, _ = parse_team_input(team_b)
-        # Get head-to-head record
-        h2h_data = get_head_to_head_record(team_a, team_b, year)
+        
+        # Use the parsed team IDs, not the original strings
+        h2h_data = get_head_to_head_record(team_a_id, team_b_id, year)  # CHANGED THIS LINE
         
         return jsonify(h2h_data)
         
