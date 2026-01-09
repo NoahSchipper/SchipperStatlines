@@ -5,8 +5,6 @@ from pybaseball import playerid_lookup, cache
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
 import os
-import psycopg2
-from psycopg2.extras import RealDictCursor
 from supabase import create_client, Client
 from sqlalchemy import create_engine, text, inspect
 from sqlalchemy.pool import StaticPool
@@ -26,11 +24,6 @@ CORS(app, resources={
 })
 
 cache.enable()
-
-
-def get_db_connection():
-    """Get PostgreSQL connection using psycopg2"""
-    return db_engine.connect()
 
 def get_db_engine():
     """Create SQLAlchemy engine for database connections"""
@@ -559,20 +552,19 @@ def get_player_with_two_way():
 @app.route("/search-players")
 def search_players_enhanced():
     """Enhanced search that handles father/son players and provides disambiguation"""
+    from sqlalchemy import text
+    
     query = request.args.get("q", "").strip()
 
     if len(query) < 2:
         return jsonify([])
 
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-
         query_clean = query.lower().strip()
         search_term = f"%{query_clean}%"
 
         # Enhanced search with birth year and additional info for disambiguation
-        search_query = """
+        search_query = text("""
         SELECT DISTINCT 
             p.namefirst || ' ' || p.namelast as full_name,
             p.playerid,
@@ -582,9 +574,9 @@ def search_players_enhanced():
             p.birthmonth,
             p.birthday,
             CASE 
-                WHEN LOWER(p.namefirst || ' ' || p.namelast) LIKE %s THEN 1
-                WHEN LOWER(p.namelast) LIKE %s THEN 2
-                WHEN LOWER(p.namefirst) LIKE %s THEN 3
+                WHEN LOWER(p.namefirst || ' ' || p.namelast) LIKE :exact_match THEN 1
+                WHEN LOWER(p.namelast) LIKE :exact_match THEN 2
+                WHEN LOWER(p.namefirst) LIKE :exact_match THEN 3
                 ELSE 4
             END as priority,
             -- Get primary position
@@ -600,27 +592,19 @@ def search_players_enhanced():
                 SELECT 1 FROM lahman_pitching pt WHERE pt.playerid = p.playerid
             ) THEN 1 ELSE 0 END as has_stats
         FROM lahman_people p
-        WHERE (LOWER(p.namefirst || ' ' || p.namelast) LIKE %s
-           OR LOWER(p.namelast) LIKE %s
-           OR LOWER(p.namefirst) LIKE %s)
-        AND p.birthyear IS NOT NULL  -- Filter out entries without birth year
+        WHERE (LOWER(p.namefirst || ' ' || p.namelast) LIKE :search_term
+           OR LOWER(p.namelast) LIKE :search_term
+           OR LOWER(p.namefirst) LIKE :search_term)
+        AND p.birthyear IS NOT NULL
         ORDER BY priority, has_stats DESC, p.debut DESC, p.namelast, p.namefirst
         LIMIT 15
-        """
+        """)
 
-        cursor.execute(
-            search_query,
-            (
-                f"{query_clean}%",
-                f"{query_clean}%",
-                f"{query_clean}%",
-                search_term,
-                search_term,
-                search_term,
-            ),
-        )
-
-        results = cursor.fetchall()
+        with db_engine.connect() as conn:
+            results = conn.execute(search_query, {
+                "exact_match": f"{query_clean}%",
+                "search_term": search_term
+            }).fetchall()
 
         # Group players by name to detect duplicates
         name_groups = {}
@@ -654,8 +638,6 @@ def search_players_enhanced():
                     "has_stats": has_stats,
                 }
             )
-
-        conn.close()
 
         # Process results and add disambiguation
         players = []
@@ -720,6 +702,8 @@ def search_players_enhanced():
         return jsonify(players)
 
     except Exception as e:
+        import traceback
+        print(f"Search error: {traceback.format_exc()}")
         return jsonify([])
 
 
@@ -728,7 +712,8 @@ def improved_player_lookup_with_disambiguation(name):
     Improved player lookup that handles common father/son cases
     and provides suggestions when multiple players exist
     """
-
+    from sqlalchemy import text
+    
     # Handle common suffixes
     suffixes = {
         "jr": "Jr.",
@@ -759,10 +744,7 @@ def improved_player_lookup_with_disambiguation(name):
 
     first, last = clean_name.split(" ", 1)
 
-    conn = get_db_connection()
-    cursor = conn.cursor()
-
-    # Find all players with this name
+    # Find all players with this name using SQLAlchemy
     all_players_query = text("""
     SELECT playerid, namefirst, namelast, debut, finalgame, birthyear
     FROM lahman_people
@@ -771,8 +753,10 @@ def improved_player_lookup_with_disambiguation(name):
     """)
 
     with db_engine.connect() as conn:
-        all_matches = conn.execute(all_players_query, {"first": first.lower(), "last": last.lower()}).fetchall()
-
+        all_matches = conn.execute(all_players_query, {
+            "first": first.lower(), 
+            "last": last.lower()
+        }).fetchall()
 
     if not all_matches:
         return None, []
@@ -780,13 +764,11 @@ def improved_player_lookup_with_disambiguation(name):
     if len(all_matches) == 1:
         return all_matches[0][0], []
 
-    # Multiple players found
+    # Multiple players found - create suggestions
     suggestions = []
     target_player = None
 
-    for i, (playerid, fname, lname, debut, final_game, birth_year) in enumerate(
-        all_matches
-    ):
+    for i, (playerid, fname, lname, debut, final_game, birth_year) in enumerate(all_matches):
         full_name = f"{fname} {lname}"
         debut_year = debut[:4] if debut else "Unknown"
 
@@ -805,9 +787,8 @@ def improved_player_lookup_with_disambiguation(name):
         suggestions.append(suggestion)
 
         # If user specified a suffix, try to match it
-        if suffix:
-            if suffix == player_suffix:
-                target_player = playerid
+        if suffix and suffix == player_suffix:
+            target_player = playerid
 
     return target_player, suggestions
 
@@ -815,6 +796,8 @@ def improved_player_lookup_with_disambiguation(name):
 @app.route("/player-disambiguate")
 def get_player_with_disambiguation():
     """Enhanced player endpoint that handles disambiguation"""
+    from sqlalchemy import text
+    
     name = request.args.get("name", "")
     mode = request.args.get("mode", "career").lower()
     player_type = request.args.get("player_type", "").lower()
@@ -842,20 +825,18 @@ def get_player_with_disambiguation():
         return jsonify({"error": "Player not found"}), 404
 
     # Continue with existing logic using the found playerid
-    conn = get_db_connection()
-    detected_type = detect_two_way_player_simple(playerid, conn)
+    detected_type = detect_two_way_player_simple(playerid, None)
 
-    # Get player's actual name for display
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT namefirst, namelast FROM lahman_people WHERE playerid = %s", (playerid,)
-    )
-    name_result = cursor.fetchone()
+    # Get player's actual name for display using SQLAlchemy
+    name_query = text("SELECT namefirst, namelast FROM lahman_people WHERE playerid = :playerid")
+    
+    with db_engine.connect() as conn:
+        name_result = conn.execute(name_query, {"playerid": playerid}).fetchone()
+    
     first, last = name_result if name_result else ("Unknown", "Unknown")
 
     # Handle two-way players
     if detected_type == "two-way" and not player_type:
-        conn.close()
         return (
             jsonify(
                 {
@@ -878,16 +859,14 @@ def get_player_with_disambiguation():
     final_type = player_type if player_type in ["pitcher", "hitter"] else detected_type
     if final_type == "two-way":
         final_type = "hitter"  # Default fallback
-    # Rest of the logic remains the same...
-    # [Include your existing photo URL and stats logic here]
-    photo_url = get_photo_url_for_player(playerid, conn)
+    
+    # Get photo URL - remove conn parameter
+    photo_url = get_photo_url_for_player(playerid, None)
 
     if final_type == "pitcher":
-        return handle_pitcher_stats(playerid, conn, mode, photo_url, first, last)
+        return handle_pitcher_stats(playerid, None, mode, photo_url, first, last)
     else:
-        conn.close()
         return handle_hitter_stats(playerid, mode, photo_url, first, last)
-
 
 @app.route("/popular-players")
 def popular_players():
@@ -915,12 +894,11 @@ def popular_players():
 @app.route("/all-players")
 def all_players():
     """Get all player names - useful for client-side caching if needed"""
+    from sqlalchemy import text
+    
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-
         # Get all players who have batting or pitching stats
-        all_players_query = """
+        all_players_query = text("""
         SELECT DISTINCT p.namefirst || ' ' || p.namelast as full_name
         FROM lahman_people p
         WHERE EXISTS (
@@ -929,78 +907,72 @@ def all_players():
             SELECT 1 FROM lahman_pitching pt WHERE pt.playerid = p.playerid
         )
         ORDER BY p.namelast, p.namefirst
-        """
+        """)
 
-        cursor.execute(all_players_query)
-        results = cursor.fetchall()
-        conn.close()
+        with db_engine.connect() as conn:
+            results = conn.execute(all_players_query).fetchall()
 
         players = [row[0] for row in results]
         return jsonify(players)
 
     except Exception as e:
+        import traceback
+        print(f"all_players error: {traceback.format_exc()}")
         return jsonify([])
-
 
 # Also add this helper function to improve your existing player lookup
 def improved_player_lookup(name):
     """Improved player lookup with better fuzzy matching"""
+    from sqlalchemy import text
+    
     if " " not in name:
         return None
 
     first, last = name.split(" ", 1)
 
-    conn = get_db_connection()
-    cursor = conn.cursor()
-
     # Try exact match first
-    exact_query = """
+    exact_query = text("""
     SELECT playerid FROM lahman_people
-    WHERE LOWER(namefirst) = %s AND LOWER(namelast) = %s
+    WHERE LOWER(namefirst) = :first AND LOWER(namelast) = :last
     LIMIT 1
-    """
-    cursor.execute(exact_query, (first.lower(), last.lower()))
-    result = cursor.fetchone()
+    """)
+    
+    with db_engine.connect() as conn:
+        result = conn.execute(exact_query, {
+            "first": first.lower(), 
+            "last": last.lower()
+        }).fetchone()
 
-    if result:
-        conn.close()
-        return result[0]
+        if result:
+            return result[0]
 
-    # Try fuzzy matching
-    fuzzy_query = """
-    SELECT playerid, namefirst, namelast,
-           CASE 
-               WHEN LOWER(namelast) = %s THEN 1
-               WHEN LOWER(namefirst) = %s THEN 2  
-               WHEN LOWER(namelast) LIKE %s THEN 3
-               WHEN LOWER(namefirst) LIKE %s THEN 4
-               ELSE 5
-           END as match_quality
-    FROM lahman_people
-    WHERE LOWER(namelast) LIKE %s OR LOWER(namefirst) LIKE %s
-    ORDER BY match_quality
-    LIMIT 1
-    """
+        # Try fuzzy matching
+        fuzzy_query = text("""
+        SELECT playerid, namefirst, namelast,
+               CASE 
+                   WHEN LOWER(namelast) = :last_exact THEN 1
+                   WHEN LOWER(namefirst) = :first_exact THEN 2  
+                   WHEN LOWER(namelast) LIKE :last_pattern THEN 3
+                   WHEN LOWER(namefirst) LIKE :first_pattern THEN 4
+                   ELSE 5
+               END as match_quality
+        FROM lahman_people
+        WHERE LOWER(namelast) LIKE :last_pattern OR LOWER(namefirst) LIKE :first_pattern
+        ORDER BY match_quality
+        LIMIT 1
+        """)
 
-    search_pattern = f"%{last.lower()}%"
-    first_pattern = f"%{first.lower()}%"
+        search_pattern_last = f"%{last.lower()}%"
+        search_pattern_first = f"%{first.lower()}%"
 
-    cursor.execute(
-        fuzzy_query,
-        (
-            last.lower(),
-            first.lower(),
-            search_pattern,
-            first_pattern,
-            search_pattern,
-            first_pattern,
-        ),
-    )
+        result = conn.execute(fuzzy_query, {
+            "last_exact": last.lower(),
+            "first_exact": first.lower(),
+            "last_pattern": search_pattern_last,
+            "first_pattern": search_pattern_first
+        }).fetchone()
 
-    result = cursor.fetchone()
-    conn.close()
-
-    return result[0] if result else None
+        return result[0] if result else None
 
 
 @app.route("/")
@@ -1010,6 +982,8 @@ def serve_index():
 
 @app.route("/player")
 def get_player_stats():
+    from sqlalchemy import text
+    
     name = request.args.get("name", "")
     mode = request.args.get("mode", "career").lower()
 
@@ -1018,30 +992,31 @@ def get_player_stats():
 
     first, last = name.split(" ", 1)
 
-    conn = get_db_connection()
-    query_id = """
+    query_id = text("""
     SELECT playerid FROM lahman_people
-    WHERE LOWER(namefirst) = %s AND LOWER(namelast) = %s
+    WHERE LOWER(namefirst) = :first AND LOWER(namelast) = :last
     LIMIT 1
-    """
-    cur = conn.cursor()
-    cur.execute(query_id, (first.lower(), last.lower()))
-    row = cur.fetchone()
+    """)
+    
+    with db_engine.connect() as conn:
+        row = conn.execute(query_id, {
+            "first": first.lower(), 
+            "last": last.lower()
+        }).fetchone()
     if not row:
-        conn.close()
         return jsonify({"error": "Player not found"}), 404
 
     playerid = row[0]
 
-    player_type = detect_player_type(playerid, conn)
+    # Remove the conn parameter since we're not using it
+    player_type = detect_player_type(playerid, None)
 
-    # get player photo
-    photo_url = get_photo_url_for_player(playerid, conn)
+    # Get player photo - remove conn parameter
+    photo_url = get_photo_url_for_player(playerid, None)
 
     if player_type == "pitcher":
-        return handle_pitcher_stats(playerid, conn, mode, photo_url, first, last)
+        return handle_pitcher_stats(playerid, None, mode, photo_url, first, last)
     else:
-        conn.close()
         return handle_hitter_stats(playerid, mode, photo_url, first, last)
 
 
@@ -1090,7 +1065,6 @@ def handle_pitcher_stats(playerid, conn, mode, photo_url, first, last):
             "whip": round(whip, 2),
         }
 
-        conn.close()
         return jsonify({
             "mode": "career",
             "player_type": "pitcher", 
@@ -1136,7 +1110,6 @@ def handle_pitcher_stats(playerid, conn, mode, photo_url, first, last):
             "era_final": "era",
         })
 
-        conn.close()
         return jsonify({
             "mode": "season",
             "player_type": "pitcher",
@@ -1150,7 +1123,6 @@ def handle_pitcher_stats(playerid, conn, mode, photo_url, first, last):
         return jsonify({"error": f"{mode.title()} stats temporarily disabled"}), 503
 
     else:
-        conn.close()
         return jsonify({"error": "Invalid mode"}), 400
 
 
