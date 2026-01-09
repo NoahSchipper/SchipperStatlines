@@ -76,7 +76,7 @@ def detect_two_way_player_simple(playerid, conn):
     return detect_player_type(playerid, conn)
 
 
-def get_photo_url_for_player():
+def get_photo_url_for_player(playerid, conn):
     """No photo URL - frontend will handle images"""
     return None
 
