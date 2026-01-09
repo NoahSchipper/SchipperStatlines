@@ -996,6 +996,92 @@ def handle_pitcher_stats(playerid, conn, mode, photo_url, first, last):
     else:
         return jsonify({"error": "Invalid mode"}), 400
 
+def get_league_averages(conn, year):
+    """Get league average OBP and SLG for a given year"""
+    from sqlalchemy import text
+    
+    query = text("""
+    SELECT 
+        SUM(h + bb + hbp) * 1.0 / NULLIF(SUM(ab + bb + hbp + sf), 0) as lg_obp,
+        (SUM(h - "2b" - "3b" - hr) + 2 * SUM("2b") + 3 * SUM("3b") + 4 * SUM(hr)) * 1.0 / NULLIF(SUM(ab), 0) as lg_slg
+    FROM lahman_batting
+    WHERE yearid = :year
+    """)
+    
+    with db_engine.connect() as conn:
+        result = conn.execute(query, {"year": year}).fetchone()
+    
+    if result and result[0] and result[1]:
+        return {"obp": float(result[0]), "slg": float(result[1])}
+    return {"obp": 0.320, "slg": 0.400}  # Fallback averages
+
+
+def calculate_ops_plus(obp, slg, year):
+    """Calculate OPS+ for a player given their OBP, SLG, and year"""
+    lg_avg = get_league_averages(None, year)
+    
+    if lg_avg["obp"] == 0 or lg_avg["slg"] == 0:
+        return 100
+    
+    # OPS+ = 100 * (OBP/lgOBP + SLG/lgSLG - 1)
+    ops_plus = 100 * ((obp / lg_avg["obp"]) + (slg / lg_avg["slg"]) - 1)
+    return round(ops_plus)
+
+
+def calculate_career_ops_plus(playerid):
+    """Calculate career OPS+ weighted by plate appearances"""
+    from sqlalchemy import text
+    
+    # Get all seasons with OBP/SLG
+    query = text("""
+    SELECT yearid, ab, h, bb, hbp, sf, "2b", "3b", hr
+    FROM lahman_batting 
+    WHERE playerid = :playerid
+    ORDER BY yearid
+    """)
+    
+    df = pd.read_sql_query(query, db_engine, params={"playerid": playerid})
+    
+    if df.empty:
+        return 100
+    
+    total_weighted_ops_plus = 0
+    total_pa = 0
+    
+    for _, row in df.iterrows():
+        ab = row['ab']
+        h = row['h']
+        bb = row['bb']
+        hbp = row['hbp']
+        sf = row['sf']
+        doubles = row['2b']
+        triples = row['3b']
+        hr = row['hr']
+        
+        pa = ab + bb + hbp + sf
+        
+        if pa == 0:
+            continue
+        
+        # Calculate season OBP and SLG
+        obp_denom = ab + bb + hbp + sf
+        obp = (h + bb + hbp) / obp_denom if obp_denom > 0 else 0
+        
+        singles = h - doubles - triples - hr
+        total_bases = singles + 2 * doubles + 3 * triples + 4 * hr
+        slg = total_bases / ab if ab > 0 else 0
+        
+        # Get OPS+ for this season
+        season_ops_plus = calculate_ops_plus(obp, slg, row['yearid'])
+        
+        # Weight by plate appearances
+        total_weighted_ops_plus += season_ops_plus * pa
+        total_pa += pa
+    
+    if total_pa == 0:
+        return 100
+    
+    return round(total_weighted_ops_plus / total_pa)
 
 def handle_hitter_stats(playerid, mode, photo_url, first, last):
     from sqlalchemy import text
@@ -1028,6 +1114,9 @@ def handle_hitter_stats(playerid, mode, photo_url, first, last):
         ops = obp + slg
         plate_appearances = totals["ab"] + totals["bb"] + totals["hbp"] + totals["sf"] + totals["sh"]
         career_war = get_career_war(playerid)
+        
+        # Calculate career OPS+
+        career_ops_plus = calculate_career_ops_plus(playerid)
 
         result = {
             "war": round(career_war, 1),
@@ -1041,7 +1130,7 @@ def handle_hitter_stats(playerid, mode, photo_url, first, last):
             "on_base_percentage": round(obp, 3),
             "slugging_percentage": round(slg, 3),
             "ops": round(ops, 3),
-            "ops_plus": 0,  # Remove live stats dependency
+            "ops_plus": career_ops_plus,
         }
 
         return jsonify({
@@ -1070,6 +1159,12 @@ def handle_hitter_stats(playerid, mode, photo_url, first, last):
         df["slg"] = df.apply(lambda row: row["total_bases"] / row["ab"] if row["ab"] > 0 else 0, axis=1)
         df["ops"] = df["obp"] + df["slg"]
         df["pa"] = df["ab"] + df["bb"] + df["hbp"] + df["sf"] + df["sh"]
+        
+        # Calculate OPS+ for each season
+        df["ops_plus"] = df.apply(
+            lambda row: calculate_ops_plus(row["obp"], row["slg"], row["yearid"]),
+            axis=1
+        )
 
         if not df_war_history.empty:
             df = df.merge(df_war_history, left_on="yearid", right_on="year_ID", how="left")
@@ -1079,7 +1174,7 @@ def handle_hitter_stats(playerid, mode, photo_url, first, last):
 
         df_result = df[[
             "yearid", "teamid", "g", "pa", "ab", "h", "hr", "rbi", "sb", "bb",
-            "hbp", "sf", "2b", "3b", "ba", "obp", "slg", "ops", "war",
+            "hbp", "sf", "2b", "3b", "ba", "obp", "slg", "ops", "ops_plus", "war",
         ]].rename(columns={
             "yearid": "year", "g": "games", "ab": "at_bats", "h": "hits",
             "hr": "home_runs", "rbi": "rbi", "sb": "stolen_bases", "bb": "walks",
@@ -1094,12 +1189,8 @@ def handle_hitter_stats(playerid, mode, photo_url, first, last):
             "awards": awards_data,
         })
 
-    # Return error for live and combined modes
-    elif mode in ["live", "combined"]:
-        return jsonify({"error": f"{mode.title()} stats temporarily disabled"}), 503
-
     else:
-        return jsonify({"error": "Invalid mode"}), 400
+        return jsonify({"error": "Invalid mode. Use 'career' or 'season'"}), 400
 
 
 @app.route("/team")
