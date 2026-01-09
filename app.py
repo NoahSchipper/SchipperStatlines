@@ -27,12 +27,11 @@ CORS(app, resources={
 
 cache.enable()
 
-'''
+
 def get_db_connection():
     """Get PostgreSQL connection using psycopg2"""
-    conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
-    return conn
-'''
+    return db_engine.connect()
+
 def get_db_engine():
     """Create SQLAlchemy engine for database connections"""
     database_url = os.getenv('DATABASE_URL')
@@ -91,22 +90,22 @@ def detect_two_way_player_simple(playerid, conn):
 
 def get_photo_url_for_player(playerid, conn):
     """Get photo URL using the correct player info from database"""
+    from sqlalchemy import text
+    
     try:
         # Get the actual names and debut info from the database for this specific playerid
-        cursor = conn.cursor()
-        cursor.execute(
-            """
+        query = text("""
             SELECT namefirst, namelast, debut, finalgame, birthyear 
-            FROM lahman_people WHERE playerid = %s
-        """,
-            (playerid,),
-        )
-        name_result = cursor.fetchone()
+            FROM lahman_people WHERE playerid = :playerid
+        """)
 
-        if not name_result:
+        with db_engine.connect() as conn:
+            result = conn.execute(query, {"playerid": playerid}).fetchone()
+        
+        if not result:
             return None
 
-        db_first, db_last, debut, final_game, birth_year = name_result
+        db_first, db_last, debut, final_game, birth_year = result
 
         # Special handling for known tricky cases with direct MLB ID mappings
         direct_mlb_mappings = {
@@ -208,16 +207,15 @@ def get_photo_url_for_player(playerid, conn):
 
 def get_world_series_championships(playerid, conn):
     """Get World Series championships for a player"""
+    from sqlalchemy import text
+    
     try:
-        cursor = conn.cursor()
-
-        # Method 1: Check if player's team won World Series in years they played
-        ws_query = """
+        ws_query = text("""
         SELECT DISTINCT b.yearid, b.teamid, s.name as team_name
         FROM lahman_batting b
         JOIN lahman_seriespost sp ON b.yearid = sp.yearid AND b.teamid = sp.teamidwinner
         LEFT JOIN lahman_teams s ON b.teamid = s.teamid AND b.yearid = s.yearid
-        WHERE b.playerid = %s AND sp.round = 'WS'
+        WHERE b.playerid = :playerid AND sp.round = 'WS'
         
         UNION
         
@@ -225,13 +223,13 @@ def get_world_series_championships(playerid, conn):
         FROM lahman_pitching p
         JOIN lahman_seriespost sp ON p.yearid = sp.yearid AND p.teamid = sp.teamidwinner
         LEFT JOIN lahman_teams s ON p.teamid = s.teamid AND p.yearid = s.yearid
-        WHERE p.playerid = %s AND sp.round = 'WS'
+        WHERE p.playerid = :playerid AND sp.round = 'WS'
         
         ORDER BY 1 DESC
-        """
+        """)
 
-        cursor.execute(ws_query, (playerid, playerid))
-        ws_results = cursor.fetchall()
+        with db_engine.connect() as conn:
+            ws_results = conn.execute(ws_query, {"playerid": playerid}).fetchall()
 
         championships = []
         for row in ws_results:
@@ -245,17 +243,16 @@ def get_world_series_championships(playerid, conn):
     except Exception as e:
         # Fallback: check awards table for WS entries
         try:
-            cursor.execute(
-                """
+            fallback_query = text("""
                 SELECT yearid, notes
                 FROM lahman_awardsplayers 
-                WHERE playerid = %s AND awardid = 'WS'
+                WHERE playerid = :playerid AND awardid = 'WS'
                 ORDER BY yearid DESC
-            """,
-                (playerid,),
-            )
+            """)
 
-            fallback_results = cursor.fetchall()
+            with db_engine.connect() as conn:
+                fallback_results = conn.execute(fallback_query, {"playerid": playerid}).fetchall()
+                
             championships = []
             for year, notes in fallback_results:
                 championships.append(
@@ -263,9 +260,8 @@ def get_world_series_championships(playerid, conn):
                         "year": year,
                         "team": "Unknown",
                         "team_name": notes or "World Series Champion",
-                    }
-                )
-
+                    })
+                
             return championships
 
         except Exception as e2:
@@ -274,21 +270,17 @@ def get_world_series_championships(playerid, conn):
 
 def get_career_war(playerid):
     """Get career WAR from JEFFBAGWELL database"""
+    from sqlalchemy import text
+    
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-
-        cursor.execute(
-            """
+        query = text("""
             SELECT SUM(WAR162) as career_war 
             FROM jeffbagwell_war 
-            WHERE key_bbref = %s
-        """,
-            (playerid,),
-        )
+            WHERE key_bbref = :playerid
+        """)
 
-        result = cursor.fetchone()
-        conn.close()
+        with db_engine.connect() as conn:
+            result = conn.execute(query, {"playerid": playerid}).fetchone()
 
         if result and result[0] is not None:
             return float(result[0])
@@ -300,19 +292,17 @@ def get_career_war(playerid):
 
 def get_season_war_history(playerid):
     """Get season-by-season WAR from JEFFBAGWELL database"""
+    from sqlalchemy import text
+    
     try:
-        conn = get_db_connection()
-        df = pd.read_sql_query(
-            """
+        query = text("""
             SELECT year_ID, WAR162 as war
             FROM jeffbagwell_war 
-            WHERE key_bbref = %s
+            WHERE key_bbref = :playerid
             ORDER BY year_ID DESC
-        """,
-            conn,
-            params=(playerid,),
-        )
-        conn.close()
+        """)
+        
+        df = pd.read_sql_query(query, db_engine, params={"playerid": playerid})
         return df
 
     except Exception as e:
@@ -321,20 +311,20 @@ def get_season_war_history(playerid):
 
 def detect_player_type(playerid, conn):
     """Detect if player is primarily a pitcher or hitter based on their stats"""
-    pitching_query = """
+    from sqlalchemy import text
+    pitching_query = text("""
     SELECT COUNT(*) as pitch_seasons, SUM(g) as total_games_pitched, SUM(gs) as total_starts
-    FROM lahman_pitching WHERE playerid = %s
-    """
-    cursor = conn.cursor()
-    cursor.execute(pitching_query, (playerid,))
-    pitch_result = cursor.fetchone()
+    FROM lahman_pitching WHERE playerid = :playerid
+    """)
 
-    batting_query = """
+    batting_query = text("""
     SELECT COUNT(*) as bat_seasons, SUM(g) as total_games_batted, SUM(ab) as total_at_bats
-    FROM lahman_batting WHERE playerid = %s
-    """
-    cursor.execute(batting_query, (playerid,))
-    bat_result = cursor.fetchone()
+    FROM lahman_batting WHERE playerid = :playerid
+    """)
+    
+    with db_engine.connect() as conn:
+        pitch_result = conn.execute(pitching_query, {"playerid": playerid}).fetchone()
+        bat_result = conn.execute(batting_query, {"playerid": playerid}).fetchone()
 
     pitch_seasons = pitch_result[0] if pitch_result else 0
     total_games_pitched = pitch_result[1] if pitch_result and pitch_result[1] else 0
@@ -354,20 +344,20 @@ def detect_player_type(playerid, conn):
 
 def get_player_awards(playerid, conn):
     """Get all awards for a player from the lahman database"""
+    from sqlalchemy import text
+    
     try:
-        cursor = conn.cursor()
-
         # Query for all awards
-        awards_query = """
+        awards_query = text("""
         SELECT yearid, awardid, lgid, tie, notes
         FROM lahman_awardsplayers 
-        WHERE playerid = %s
+        WHERE playerid = :playerid
         ORDER BY yearid DESC, awardid
-        """
+        """)
 
-        cursor.execute(awards_query, (playerid,))
-        awards_data = cursor.fetchall()
-
+        with db_engine.connect() as conn:
+            awards_data = conn.execute(awards_query, {"playerid": playerid}).fetchall()
+            
         awards = []
         for row in awards_data:
             year, award_id, league, tie, notes = row
@@ -476,17 +466,17 @@ def summarize_awards(awards):
 
 def get_allstar_appearances(playerid, conn):
     """Get MLB All-Star Game appearances from AllstarFull table"""
+    from sqlalchemy import text
+    
     try:
-        cursor = conn.cursor()
-        cursor.execute(
-            """
+        query = text("""
             SELECT COUNT(*) as allstar_games
             FROM lahman_allstarfull 
-            WHERE playerid = %s
-        """,
-            (playerid,),
-        )
-        result = cursor.fetchone()
+            WHERE playerid = :playerid
+        """)
+        with db_engine.connect() as conn:
+            result = conn.execute(query, {"playerid": playerid}).fetchone()
+        
         return result[0] if result else 0
     except Exception as e:
         return 0
@@ -496,46 +486,43 @@ def get_allstar_appearances(playerid, conn):
 @app.route("/player-two-way")
 def get_player_with_two_way():
     """Enhanced player endpoint that handles two-way players"""
+    from sqlalchemy import text
+    
     name = request.args.get("name", "")
     mode = request.args.get("mode", "career").lower()
-    player_type = request.args.get("player_type", "").lower()  # "pitcher" or "hitter"
+    player_type = request.args.get("player_type", "").lower()
 
     if " " not in name:
         return jsonify({"error": "Enter full name"}), 400
 
-    # Try improved lookup with disambiguation
     playerid, suggestions = improved_player_lookup_with_disambiguation(name)
 
     if playerid is None and suggestions:
         return (
-            jsonify(
-                {
-                    "error": "Multiple players found",
-                    "suggestions": suggestions,
-                    "message": f"Found {len(suggestions)} players named '{name.split(' Jr.')[0].split(' Sr.')[0]}'. Please specify which player:",
-                }
-            ),
+            jsonify({
+                "error": "Multiple players found",
+                "suggestions": suggestions,
+                "message": f"Found {len(suggestions)} players named '{name.split(' Jr.')[0].split(' Sr.')[0]}'. Please specify which player:",
+            }),
             422,
         )
 
     if playerid is None:
         return jsonify({"error": "Player not found"}), 404
 
-    conn = get_db_connection()
-    detected_type = detect_two_way_player_simple(playerid, conn)
+    detected_type = detect_two_way_player_simple(playerid, None)
 
     # Get player's actual name for display
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT namefirst, namelast FROM lahman_people WHERE playerid = %s", (playerid,)
-    )
-    name_result = cursor.fetchone()
+    name_query = text("SELECT namefirst, namelast FROM lahman_people WHERE playerid = :playerid")
+    
+    with db_engine.connect() as conn:
+        name_result = conn.execute(name_query, {"playerid": playerid}).fetchone()
+    
     first, last = name_result if name_result else ("Unknown", "Unknown")
 
     # Handle two-way players
     if detected_type == "two-way" and not player_type:
         # Return options for user to choose
-        conn.close()
         return (
             jsonify(
                 {
@@ -560,13 +547,12 @@ def get_player_with_two_way():
         final_type = "hitter"  # Default fallback
 
     # Get photo URL
-    photo_url = get_photo_url_for_player(playerid, conn)
+    photo_url = get_photo_url_for_player(playerid, None)
 
     # Process stats based on final type
     if final_type == "pitcher":
-        return handle_pitcher_stats(playerid, conn, mode, photo_url, first, last)
+        return handle_pitcher_stats(playerid, None, mode, photo_url, first, last)
     else:
-        conn.close()
         return handle_hitter_stats(playerid, mode, photo_url, first, last)
 
 
@@ -777,16 +763,16 @@ def improved_player_lookup_with_disambiguation(name):
     cursor = conn.cursor()
 
     # Find all players with this name
-    all_players_query = """
+    all_players_query = text("""
     SELECT playerid, namefirst, namelast, debut, finalgame, birthyear
     FROM lahman_people
-    WHERE LOWER(namefirst) = %s AND LOWER(namelast) = %s
+    WHERE LOWER(namefirst) = :first AND LOWER(namelast) = :last
     ORDER BY debut
-    """
+    """)
 
-    cursor.execute(all_players_query, (first.lower(), last.lower()))
-    all_matches = cursor.fetchall()
-    conn.close()
+    with db_engine.connect() as conn:
+        all_matches = conn.execute(all_players_query, {"first": first.lower(), "last": last.lower()}).fetchall()
+
 
     if not all_matches:
         return None, []
@@ -1060,15 +1046,15 @@ def get_player_stats():
 
 
 def handle_pitcher_stats(playerid, conn, mode, photo_url, first, last):
-    # Remove all live stats fetching
-    stats_query = """
+    from sqlalchemy import text
+    
+    stats_query = text("""
     SELECT yearid, teamid, w, l, g, gs, cg, sho, sv, ipouts, h, er, hr, bb, so, era
-    FROM lahman_pitching WHERE playerid = %s
-    """
-    df_lahman = pd.read_sql_query(stats_query, conn, params=(playerid,))
-
-    # get awards for this player
-    awards_data = get_player_awards(playerid, conn)
+    FROM lahman_pitching WHERE playerid = :playerid
+    """)
+    
+    df_lahman = pd.read_sql_query(stats_query, db_engine, params={"playerid": playerid})
+    awards_data = get_player_awards(playerid, None)
     
     if mode == "career":
         if df_lahman.empty:
@@ -1161,7 +1147,6 @@ def handle_pitcher_stats(playerid, conn, mode, photo_url, first, last):
 
     # Return error for live and combined modes
     elif mode in ["live", "combined"]:
-        conn.close()
         return jsonify({"error": f"{mode.title()} stats temporarily disabled"}), 503
 
     else:
@@ -1170,18 +1155,18 @@ def handle_pitcher_stats(playerid, conn, mode, photo_url, first, last):
 
 
 def handle_hitter_stats(playerid, mode, photo_url, first, last):
-    conn = get_db_connection()
+    from sqlalchemy import text
     
-    stats_query = """
+    stats_query = text("""
     SELECT yearid, teamid, g, ab, h, hr, rbi, sb, bb, hbp, sf, sh, "2b", "3b"
-    FROM lahman_batting WHERE playerid = %s
-    """
-    df_lahman = pd.read_sql_query(stats_query, conn, params=(playerid,))
-    awards_data = get_player_awards(playerid, conn)
+    FROM lahman_batting WHERE playerid = :playerid
+    """)
+    
+    df_lahman = pd.read_sql_query(stats_query, db_engine, params={"playerid": playerid})
+    awards_data = get_player_awards(playerid, None)
     
     if mode == "career":
         if df_lahman.empty:
-            conn.close()
             return jsonify({"error": "No batting stats found"}), 404
 
         totals = df_lahman.agg({
@@ -1215,7 +1200,6 @@ def handle_hitter_stats(playerid, mode, photo_url, first, last):
             "ops_plus": 0,  # Remove live stats dependency
         }
 
-        conn.close()
         return jsonify({
             "mode": "career",
             "player_type": "hitter",
@@ -1226,7 +1210,6 @@ def handle_hitter_stats(playerid, mode, photo_url, first, last):
 
     elif mode == "season":
         if df_lahman.empty:
-            conn.close()
             return jsonify({"error": "No batting stats found"}), 404
 
         df_war_history = get_season_war_history(playerid)
@@ -1259,7 +1242,6 @@ def handle_hitter_stats(playerid, mode, photo_url, first, last):
             "hbp": "hit_by_pitch", "sf": "sacrifice_flies", "2b": "doubles", "3b": "triples",
         })
 
-        conn.close()
         return jsonify({
             "mode": "season",
             "player_type": "hitter",
@@ -1270,11 +1252,9 @@ def handle_hitter_stats(playerid, mode, photo_url, first, last):
 
     # Return error for live and combined modes
     elif mode in ["live", "combined"]:
-        conn.close()
         return jsonify({"error": f"{mode.title()} stats temporarily disabled"}), 503
 
     else:
-        conn.close()
         return jsonify({"error": "Invalid mode"}), 400
 
 
