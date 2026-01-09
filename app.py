@@ -61,7 +61,7 @@ def get_supabase_client():
     return supabase
 
 
-''' (Team Endpoint -- still included for completeness, not used in this version)
+
 KNOWN_TWO_WAY_PLAYERS = {
     # Modern era two-way players
     "ohtansh01": "Shohei Ohtani",
@@ -1277,7 +1277,7 @@ def handle_hitter_stats(playerid, mode, photo_url, first, last):
         conn.close()
         return jsonify({"error": "Invalid mode"}), 400
 
-'''
+
 @app.route("/team")
 def get_team_stats():
     """Unified endpoint that returns both batting and pitching stats"""
