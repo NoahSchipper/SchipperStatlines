@@ -76,33 +76,9 @@ def detect_two_way_player_simple(playerid, conn):
     return detect_player_type(playerid, conn)
 
 
-def get_photo_url_for_player(playerid, conn):
-    """Use images from Flask static folder - works everywhere"""
-    from sqlalchemy import text
-    from flask import url_for
-    
-    try:
-        query = text("""
-            SELECT 
-                (SELECT COUNT(*) FROM lahman_pitching WHERE playerid = :playerid) as pitch_count,
-                (SELECT COUNT(*) FROM lahman_batting WHERE playerid = :playerid) as bat_count
-        """)
-        
-        with db_engine.connect() as conn:
-            result = conn.execute(query, {"playerid": playerid}).fetchone()
-        
-        pitch_count, bat_count = result
-        
-        # url_for automatically uses the correct domain (test or production)
-        if pitch_count > bat_count:
-            return url_for('static', filename='pitcherShadow.png', _external=True)
-        else:
-            return url_for('static', filename='batterShadow.png', _external=True)
-            
-    except Exception as e:
-        print(f"Photo URL error: {e}")
-        return url_for('static', filename='MLB.png', _external=True)
-
+def get_photo_url_for_player():
+    """No photo URL - frontend will handle images"""
+    return None
 
 def get_world_series_championships(playerid, conn):
     """Get World Series championships for a player"""
