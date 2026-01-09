@@ -444,6 +444,7 @@ def search_players_enhanced():
     try:
         query_clean = query.lower().strip()
         search_term = f"%{query_clean}%"
+        exact_match = f"{query_clean}%"
 
         # Enhanced search with birth year and additional info for disambiguation
         search_query = text("""
@@ -484,7 +485,7 @@ def search_players_enhanced():
 
         with db_engine.connect() as conn:
             results = conn.execute(search_query, {
-                "exact_match": f"{query_clean}%",
+                "exact_match": exact_match,
                 "search_term": search_term
             }).fetchall()
 
@@ -586,7 +587,7 @@ def search_players_enhanced():
     except Exception as e:
         import traceback
         print(f"Search error: {traceback.format_exc()}")
-        return jsonify([])
+        return jsonify({"error": str(e)}), 500  # Return error with status code
 
 
 def improved_player_lookup_with_disambiguation(name):
