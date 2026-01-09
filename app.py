@@ -1,9 +1,10 @@
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
-from pybaseball import playerid_lookup, cache
+from pybaseball import playerid_lookup
 # from pybaseball import batting_stats, pitching_stats
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
+import psutil
 import os
 from supabase import create_client, Client
 from sqlalchemy import create_engine, text, inspect
@@ -22,8 +23,6 @@ CORS(app, resources={
         "origins": [ "https://schipperstatlines.onrender.com", "https://website-a7a.pages.dev", "http://127.0.0.1:5501", "https://noahschipper.net"],
     }
 })
-
-cache.enable()
 
 def get_db_engine():
     """Create SQLAlchemy engine for database connections"""
@@ -581,21 +580,22 @@ def search_players_enhanced():
             END as priority,
             -- Get primary position
             (SELECT pos FROM lahman_fielding f 
-             WHERE f.playerid = p.playerid 
+             WHERE f.playerid = p.playerid and f.yearid >= 2000
              GROUP BY pos 
              ORDER BY SUM(g) DESC 
              LIMIT 1) as primary_pos,
             -- Check if this player has stats (to filter out coaches, etc.)
             CASE WHEN EXISTS (
-                SELECT 1 FROM lahman_batting b WHERE b.playerid = p.playerid
+                SELECT 1 FROM lahman_batting b WHERE b.playerid = p.playerid AND b.yearid >=2000
             ) OR EXISTS (
-                SELECT 1 FROM lahman_pitching pt WHERE pt.playerid = p.playerid
+                SELECT 1 FROM lahman_pitching pt WHERE pt.playerid = p.playerid AND pt.yearid >= 2000
             ) THEN 1 ELSE 0 END as has_stats
         FROM lahman_people p
         WHERE (LOWER(p.namefirst || ' ' || p.namelast) LIKE :search_term
            OR LOWER(p.namelast) LIKE :search_term
            OR LOWER(p.namefirst) LIKE :search_term)
         AND p.birthyear IS NOT NULL
+        AND p.debut >= '2000-01-01'
         ORDER BY priority, has_stats DESC, p.debut DESC, p.namelast, p.namefirst
         LIMIT 15
         """)
@@ -901,12 +901,14 @@ def all_players():
         all_players_query = text("""
         SELECT DISTINCT p.namefirst || ' ' || p.namelast as full_name
         FROM lahman_people p
-        WHERE EXISTS (
+        WHERE p.debut >= '2000-01-01'
+        AND (EXISTS (
             SELECT 1 FROM lahman_batting b WHERE b.playerid = p.playerid
         ) OR EXISTS (
             SELECT 1 FROM lahman_pitching pt WHERE pt.playerid = p.playerid
-        )
+        ))
         ORDER BY p.namelast, p.namefirst
+        LIMIT 500
         """)
 
         with db_engine.connect() as conn:
@@ -1022,10 +1024,11 @@ def get_player_stats():
 
 def handle_pitcher_stats(playerid, conn, mode, photo_url, first, last):
     from sqlalchemy import text
-    
+    #limit to post 2000 seasons
     stats_query = text("""
     SELECT yearid, teamid, w, l, g, gs, cg, sho, sv, ipouts, h, er, hr, bb, so, era
-    FROM lahman_pitching WHERE playerid = :playerid
+    FROM lahman_pitching WHERE playerid = :playerid AND yearid >= 2000
+    ORDER BY yearid DESC
     """)
     
     df_lahman = pd.read_sql_query(stats_query, db_engine, params={"playerid": playerid})
@@ -1131,7 +1134,8 @@ def handle_hitter_stats(playerid, mode, photo_url, first, last):
     
     stats_query = text("""
     SELECT yearid, teamid, g, ab, h, hr, rbi, sb, bb, hbp, sf, sh, "2b", "3b"
-    FROM lahman_batting WHERE playerid = :playerid
+    FROM lahman_batting WHERE playerid = :playerid AND yearid >= 2000
+    ORDER BY yearid DESC
     """)
     
     df_lahman = pd.read_sql_query(stats_query, db_engine, params={"playerid": playerid})
@@ -2505,6 +2509,15 @@ def team_h2h():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/health")
+def health():
+    process = psutil.Process(os.getpid())
+    mem_mb = process.memory_info().rss / 1024 / 1024
+    return jsonify({
+        "status": "healthy",
+        "memory_mb": round(mem_mb, 2),
+        "memory_percent": round(process.memory_percent(), 2)
+    })
 
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5000))
