@@ -178,11 +178,16 @@ def get_season_war_history(playerid):
         """)
         
         df = pd.read_sql_query(query, db_engine, params={"playerid": playerid})
+        
+        # CRITICAL FIX: Rename to match the merge column
+        if 'year_ID' in df.columns:
+            df = df.rename(columns={'year_ID': 'yearid'})
+        
         return df
 
     except Exception as e:
+        print(f"get_season_war_history error: {e}")
         return pd.DataFrame()
-
 
 def detect_player_type(playerid, conn):
     """Detect if player is primarily a pitcher or hitter based on their stats"""
@@ -965,7 +970,7 @@ def handle_pitcher_stats(playerid, conn, mode, photo_url, first, last):
         )
 
         if not df_war_history.empty:
-            df = df.merge(df_war_history, left_on="yearid", right_on="year_ID", how="left")
+            df = df.merge(df_war_history, on="yearid", how="left")
             df["war"] = df["war"].fillna(0)
         else:
             df["war"] = 0
@@ -1167,7 +1172,7 @@ def handle_hitter_stats(playerid, mode, photo_url, first, last):
         )
 
         if not df_war_history.empty:
-            df = df.merge(df_war_history, left_on="yearid", right_on="year_ID", how="left")
+            df = df.merge(df_war_history, on="yearid", how="left")
             df["war"] = df["war"].fillna(0)
         else:
             df["war"] = 0
