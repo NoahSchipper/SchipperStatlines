@@ -4,7 +4,6 @@ from pybaseball import playerid_lookup
 # from pybaseball import batting_stats, pitching_stats
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
-import psutil
 import os
 from supabase import create_client, Client
 from sqlalchemy import create_engine, text, inspect
@@ -2507,17 +2506,6 @@ def team_h2h():
         
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
-
-@app.route("/health")
-def health():
-    process = psutil.Process(os.getpid())
-    mem_mb = process.memory_info().rss / 1024 / 1024
-    return jsonify({
-        "status": "healthy",
-        "memory_mb": round(mem_mb, 2),
-        "memory_percent": round(process.memory_percent(), 2)
-    })
 
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5000))
