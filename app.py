@@ -77,12 +77,11 @@ def detect_two_way_player_simple(playerid, conn):
 
 
 def get_photo_url_for_player(playerid, conn):
-    """Use default images instead of MLB photos - saves memory by removing PyBaseball"""
+    """Use images from Flask static folder - works everywhere"""
     from sqlalchemy import text
+    from flask import url_for
     
-    # Determine if player is pitcher or hitter
     try:
-        # Quick check - are they primarily a pitcher?
         query = text("""
             SELECT 
                 (SELECT COUNT(*) FROM lahman_pitching WHERE playerid = :playerid) as pitch_count,
@@ -94,15 +93,15 @@ def get_photo_url_for_player(playerid, conn):
         
         pitch_count, bat_count = result
         
-        # Return appropriate default image
+        # url_for automatically uses the correct domain (test or production)
         if pitch_count > bat_count:
-            return "https://noahschipper.net/assets/pitcherShadow.png"
+            return url_for('assets', filename='pitcherShadow.png', _external=True)
         else:
-            return "https://noahschipper.net/assets/batterShadow.png"
+            return url_for('assets', filename='batterShadow.png', _external=True)
             
-    except:
-        # Fallback to generic baseball player
-        return "https://noahschipper.net/assets/MLB.png"
+    except Exception as e:
+        print(f"Photo URL error: {e}")
+        return url_for('assets', filename='MLB.png', _external=True)
 
 
 def get_world_series_championships(playerid, conn):
@@ -488,22 +487,21 @@ def search_players_enhanced():
             END as priority,
             -- Get primary position
             (SELECT pos FROM lahman_fielding f 
-             WHERE f.playerid = p.playerid and f.yearid >= 2000
+             WHERE f.playerid = p.playerid
              GROUP BY pos 
              ORDER BY SUM(g) DESC 
              LIMIT 1) as primary_pos,
             -- Check if this player has stats (to filter out coaches, etc.)
             CASE WHEN EXISTS (
-                SELECT 1 FROM lahman_batting b WHERE b.playerid = p.playerid AND b.yearid >=2000
+                SELECT 1 FROM lahman_batting b WHERE b.playerid = p.playerid 
             ) OR EXISTS (
-                SELECT 1 FROM lahman_pitching pt WHERE pt.playerid = p.playerid AND pt.yearid >= 2000
+                SELECT 1 FROM lahman_pitching pt WHERE pt.playerid = p.playerid
             ) THEN 1 ELSE 0 END as has_stats
         FROM lahman_people p
         WHERE (LOWER(p.namefirst || ' ' || p.namelast) LIKE :search_term
            OR LOWER(p.namelast) LIKE :search_term
            OR LOWER(p.namefirst) LIKE :search_term)
         AND p.birthyear IS NOT NULL
-        AND p.debut >= '2000-01-01'
         ORDER BY priority, has_stats DESC, p.debut DESC, p.namelast, p.namefirst
         LIMIT 15
         """)
@@ -809,12 +807,11 @@ def all_players():
         all_players_query = text("""
         SELECT DISTINCT p.namefirst || ' ' || p.namelast as full_name
         FROM lahman_people p
-        WHERE p.debut >= '2000-01-01'
-        AND (EXISTS (
+        WHERE EXISTS (
             SELECT 1 FROM lahman_batting b WHERE b.playerid = p.playerid
         ) OR EXISTS (
             SELECT 1 FROM lahman_pitching pt WHERE pt.playerid = p.playerid
-        ))
+        )
         ORDER BY p.namelast, p.namefirst
         LIMIT 500
         """)
@@ -932,10 +929,10 @@ def get_player_stats():
 
 def handle_pitcher_stats(playerid, conn, mode, photo_url, first, last):
     from sqlalchemy import text
-    #limit to post 2000 seasons
+    
     stats_query = text("""
     SELECT yearid, teamid, w, l, g, gs, cg, sho, sv, ipouts, h, er, hr, bb, so, era
-    FROM lahman_pitching WHERE playerid = :playerid AND yearid >= 2000
+    FROM lahman_pitching WHERE playerid = :playerid
     ORDER BY yearid DESC
     """)
     
@@ -1042,7 +1039,7 @@ def handle_hitter_stats(playerid, mode, photo_url, first, last):
     
     stats_query = text("""
     SELECT yearid, teamid, g, ab, h, hr, rbi, sb, bb, hbp, sf, sh, "2b", "3b"
-    FROM lahman_batting WHERE playerid = :playerid AND yearid >= 2000
+    FROM lahman_batting WHERE playerid = :playerid
     ORDER BY yearid DESC
     """)
     
