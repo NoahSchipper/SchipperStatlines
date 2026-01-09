@@ -446,40 +446,36 @@ def search_players_enhanced():
         search_term = f"%{query_clean}%"
         exact_match = f"{query_clean}%"
 
-        # Enhanced search with birth year and additional info for disambiguation
+        # FIXED: Simplified query to avoid concatenation issues
         search_query = text("""
         SELECT DISTINCT 
-            p.namefirst || ' ' || p.namelast as full_name,
+            p.namefirst,
+            p.namelast,
             p.playerid,
             p.debut,
             p.finalgame,
             p.birthyear,
-            p.birthmonth,
-            p.birthday,
             CASE 
-                WHEN LOWER(p.namefirst || ' ' || p.namelast) LIKE :exact_match THEN 1
-                WHEN LOWER(p.namelast) LIKE :exact_match THEN 2
-                WHEN LOWER(p.namefirst) LIKE :exact_match THEN 3
-                ELSE 4
+                WHEN LOWER(p.namelast) LIKE :exact_match THEN 1
+                WHEN LOWER(p.namefirst) LIKE :exact_match THEN 2
+                ELSE 3
             END as priority,
-            -- Get primary position
             (SELECT pos FROM lahman_fielding f 
              WHERE f.playerid = p.playerid
              GROUP BY pos 
              ORDER BY SUM(g) DESC 
-             LIMIT 1) as primary_pos,
-            -- Check if this player has stats (to filter out coaches, etc.)
-            CASE WHEN EXISTS (
-                SELECT 1 FROM lahman_batting b WHERE b.playerid = p.playerid 
-            ) OR EXISTS (
-                SELECT 1 FROM lahman_pitching pt WHERE pt.playerid = p.playerid
-            ) THEN 1 ELSE 0 END as has_stats
+             LIMIT 1) as primary_pos
         FROM lahman_people p
-        WHERE (LOWER(p.namefirst || ' ' || p.namelast) LIKE :search_term
-           OR LOWER(p.namelast) LIKE :search_term
-           OR LOWER(p.namefirst) LIKE :search_term)
+        WHERE (
+            LOWER(p.namelast) LIKE :search_term
+            OR LOWER(p.namefirst) LIKE :search_term
+        )
         AND p.birthyear IS NOT NULL
-        ORDER BY priority, has_stats DESC, p.debut DESC, p.namelast, p.namefirst
+        AND (
+            EXISTS (SELECT 1 FROM lahman_batting b WHERE b.playerid = p.playerid)
+            OR EXISTS (SELECT 1 FROM lahman_pitching pt WHERE pt.playerid = p.playerid)
+        )
+        ORDER BY priority, p.debut DESC NULLS LAST, p.namelast, p.namefirst
         LIMIT 15
         """)
 
@@ -492,35 +488,27 @@ def search_players_enhanced():
         # Group players by name to detect duplicates
         name_groups = {}
         for row in results:
-            (
-                full_name,
-                playerid,
-                debut,
-                final_game,
-                birth_year,
-                birth_month,
-                birth_day,
-                priority,
-                position,
-                has_stats,
-            ) = row
+            first_name = row[0]
+            last_name = row[1]
+            full_name = f"{first_name} {last_name}"
+            playerid = row[2]
+            debut = row[3]
+            final_game = row[4]
+            birth_year = row[5]
+            priority = row[6]
+            position = row[7]
 
             if full_name not in name_groups:
                 name_groups[full_name] = []
 
-            name_groups[full_name].append(
-                {
-                    "full_name": full_name,
-                    "playerid": playerid,
-                    "debut": debut,
-                    "final_game": final_game,
-                    "birth_year": birth_year,
-                    "birth_month": birth_month,
-                    "birth_day": birth_day,
-                    "position": position,
-                    "has_stats": has_stats,
-                }
-            )
+            name_groups[full_name].append({
+                "full_name": full_name,
+                "playerid": playerid,
+                "debut": debut,
+                "final_game": final_game,
+                "birth_year": birth_year,
+                "position": position,
+            })
 
         # Process results and add disambiguation
         players = []
@@ -535,16 +523,14 @@ def search_players_enhanced():
                 else:
                     display_name = f"{name} ({debut_year})"
 
-                players.append(
-                    {
-                        "name": name,
-                        "display": display_name,
-                        "playerid": player["playerid"],
-                        "debut_year": debut_year,
-                        "position": player["position"] or "Unknown",
-                        "disambiguation": None,
-                    }
-                )
+                players.append({
+                    "name": name,
+                    "display": display_name,
+                    "playerid": player["playerid"],
+                    "debut_year": debut_year,
+                    "position": player["position"] or "Unknown",
+                    "disambiguation": None,
+                })
             else:
                 # Multiple players with same name - add disambiguation
                 # Sort by debut year (older first)
@@ -563,32 +549,32 @@ def search_players_enhanced():
                     # Create display name with disambiguation
                     base_display = f"{name} {suffix}"
                     if player["position"]:
-                        display_name = (
-                            f"{base_display} ({player['position']}, {debut_year})"
-                        )
+                        display_name = f"{base_display} ({player['position']}, {debut_year})"
                     else:
                         display_name = f"{base_display} ({debut_year})"
 
-                    players.append(
-                        {
-                            "name": name,
-                            "display": display_name,
-                            "playerid": player["playerid"],
-                            "debut_year": debut_year,
-                            "birth_year": str(birth_year),
-                            "position": player["position"] or "Unknown",
-                            "disambiguation": suffix,
-                            "original_name": name,
-                        }
-                    )
+                    players.append({
+                        "name": name,
+                        "display": display_name,
+                        "playerid": player["playerid"],
+                        "debut_year": debut_year,
+                        "birth_year": str(birth_year),
+                        "position": player["position"] or "Unknown",
+                        "disambiguation": suffix,
+                        "original_name": name,
+                    })
 
         return jsonify(players)
 
     except Exception as e:
         import traceback
-        print(f"Search error: {traceback.format_exc()}")
-        return jsonify({"error": str(e)}), 500  # Return error with status code
-
+        error_trace = traceback.format_exc()
+        print(f"Search error: {error_trace}")
+        # Return error details for debugging
+        return jsonify({
+            "error": str(e),
+            "traceback": error_trace
+        }), 500
 
 def improved_player_lookup_with_disambiguation(name):
     """
