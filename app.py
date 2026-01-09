@@ -1,8 +1,5 @@
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
-from pybaseball import playerid_lookup
-# from pybaseball import batting_stats, pitching_stats
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
 import os
 from supabase import create_client, Client
@@ -80,120 +77,32 @@ def detect_two_way_player_simple(playerid, conn):
 
 
 def get_photo_url_for_player(playerid, conn):
-    """Get photo URL using the correct player info from database"""
+    """Use default images instead of MLB photos - saves memory by removing PyBaseball"""
     from sqlalchemy import text
     
+    # Determine if player is pitcher or hitter
     try:
-        # Get the actual names and debut info from the database for this specific playerid
+        # Quick check - are they primarily a pitcher?
         query = text("""
-            SELECT namefirst, namelast, debut, finalgame, birthyear 
-            FROM lahman_people WHERE playerid = :playerid
+            SELECT 
+                (SELECT COUNT(*) FROM lahman_pitching WHERE playerid = :playerid) as pitch_count,
+                (SELECT COUNT(*) FROM lahman_batting WHERE playerid = :playerid) as bat_count
         """)
-
+        
         with db_engine.connect() as conn:
             result = conn.execute(query, {"playerid": playerid}).fetchone()
         
-        if not result:
-            return None
-
-        db_first, db_last, debut, final_game, birth_year = result
-
-        # Special handling for known tricky cases with direct MLB ID mappings
-        direct_mlb_mappings = {
-            # Format: playerid -> (search_name, mlb_id)
-            "griffke01": ("Ken Griffey", None),  # Sr. - let lookup handle it
-            "griffke02": ("Ken Griffey Jr.", None),  # Jr. - let lookup handle it
-            "tatisfe01": ("Fernando Tatis", 123107),  # Sr. with direct MLB ID
-            "tatisfe02": ("Fernando Tatis Jr.", 665487),  # Jr. with direct MLB ID
-            "ripkeca99": ("Cal Ripken Sr.", None),  # Sr. - was mostly coach/manager
-            "ripkeca01": ("Cal Ripken Jr.", 121222),  # Jr. with direct MLB ID
-            "raineti01": ("Tim Raines", 120891),  # Sr. with direct MLB ID
-            "raineti02": ("Tim Raines Jr.", 406428),  # Jr. with direct MLB ID
-            "alomasa01": ("Sandy Alomar Sr.", None),  # Sr.
-            "alomasa02": ("Sandy Alomar Jr.", None),  # Jr.
-            "rosepe01": ("Pete Rose", None),  # Sr. - let lookup handle it
-            "rosepe02": ("Pete Rose Jr.", 121453),  # Jr. with direct MLB ID
-            "baezja01": ("Javier Baez", 595879),  # Direct MLB ID for Baez
-        }
-
-        # Check if we have a direct mapping for this player
-        if playerid in direct_mlb_mappings:
-            search_name, direct_mlb_id = direct_mlb_mappings[playerid]
-
-            # If we have a direct MLB ID, use it
-            if direct_mlb_id:
-                photo_url = f"https://img.mlbstatic.com/mlb-photos/image/upload/v1/people/{direct_mlb_id}/headshot/67/current.jpg"
-                return photo_url
+        pitch_count, bat_count = result
+        
+        # Return appropriate default image
+        if pitch_count > bat_count:
+            return "https://noahschipper.net/assets/pitcherShadow.png"
         else:
-            # Not a known special case, use database names
-            search_name = f"{db_first} {db_last}"
-
-        # For cases without direct MLB ID, do the lookup
-        mlb_id = None
-        try:
-            # Split the search name for the lookup function
-            name_parts = (
-                search_name.replace(" Jr.", "")
-                .replace(" Sr.", "")
-                .replace(" III", "")
-                .replace(" II", "")
-                .split()
-            )
-            lookup_first = name_parts[0]
-            lookup_last = " ".join(name_parts[1:])
-            lookup = playerid_lookup(lookup_last, lookup_first)
-
-            if not lookup.empty:
-
-                # For father/son cases, try to match by career years
-                best_match = None
-                if len(lookup) > 1:
-                    debut_year = int(debut[:4]) if debut else None
-                    final_year = int(final_game[:4]) if final_game else None
-
-                    for _, row in lookup.iterrows():
-                        if pd.isna(row["key_mlbam"]):
-                            continue
-
-                        mlb_first = row.get("mlb_played_first")
-                        mlb_last = row.get("mlb_played_last")
-
-                        # Try to match by career overlap
-                        if debut_year and mlb_first and mlb_last:
-                            mlb_first_year = int(mlb_first) if mlb_first else None
-                            mlb_last_year = int(mlb_last) if mlb_last else None
-
-                            if (
-                                mlb_first_year
-                                and abs(mlb_first_year - debut_year) <= 1
-                                and mlb_last_year
-                                and final_year
-                                and abs(mlb_last_year - final_year) <= 1
-                            ):
-                                best_match = row
-                                break
-
-                # Use best match or first available
-                target_row = best_match if best_match is not None else lookup.iloc[0]
-
-                if not pd.isna(target_row["key_mlbam"]):
-                    mlb_id = int(target_row["key_mlbam"])
-                else:
-                    print("MLB ID is NaN")
-            else:
-                print("No lookup results found")
-
-        except Exception as e:
-            print(f"MLB ID lookup failed for {search_name}: {e}")
-
-        if mlb_id:
-            photo_url = f"https://img.mlbstatic.com/mlb-photos/image/upload/v1/people/{mlb_id}/headshot/67/current.jpg"
-            return photo_url
-
-        return None
-
-    except Exception as e:
-        return None
+            return "https://noahschipper.net/assets/batterShadow.png"
+            
+    except:
+        # Fallback to generic baseball player
+        return "https://noahschipper.net/assets/MLB.png"
 
 
 def get_world_series_championships(playerid, conn):
