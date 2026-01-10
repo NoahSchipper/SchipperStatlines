@@ -436,7 +436,7 @@ def get_player_with_two_way():
         return handle_hitter_stats(playerid, mode, photo_url, first, last)
 
 
-@app.route("/search-players")
+@app.route('/search-players')
 def search_players_enhanced():
     """Enhanced search that handles father/son players and provides disambiguation"""
     from sqlalchemy import text
@@ -451,7 +451,7 @@ def search_players_enhanced():
         search_term = f"%{query_clean}%"
         exact_match = f"{query_clean}%"
 
-        # FIXED: Simplified query to avoid concatenation issues
+        # FIXED: Search across full name concatenation
         search_query = text("""
         SELECT DISTINCT 
             p.namefirst,
@@ -461,9 +461,10 @@ def search_players_enhanced():
             p.finalgame,
             p.birthyear,
             CASE 
-                WHEN LOWER(p.namelast) LIKE :exact_match THEN 1
-                WHEN LOWER(p.namefirst) LIKE :exact_match THEN 2
-                ELSE 3
+                WHEN LOWER(p.namefirst || ' ' || p.namelast) LIKE :exact_match THEN 1
+                WHEN LOWER(p.namelast) LIKE :exact_match THEN 2
+                WHEN LOWER(p.namefirst) LIKE :exact_match THEN 3
+                ELSE 4
             END as priority,
             (SELECT pos FROM lahman_fielding f 
              WHERE f.playerid = p.playerid
@@ -472,7 +473,8 @@ def search_players_enhanced():
              LIMIT 1) as primary_pos
         FROM lahman_people p
         WHERE (
-            LOWER(p.namelast) LIKE :search_term
+            LOWER(p.namefirst || ' ' || p.namelast) LIKE :search_term
+            OR LOWER(p.namelast) LIKE :search_term
             OR LOWER(p.namefirst) LIKE :search_term
         )
         AND p.birthyear IS NOT NULL
@@ -489,6 +491,7 @@ def search_players_enhanced():
                 "exact_match": exact_match,
                 "search_term": search_term
             }).fetchall()
+
 
         # Group players by name to detect duplicates
         name_groups = {}
