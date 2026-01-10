@@ -1057,14 +1057,14 @@ def calculate_career_ops_plus(playerid):
     total_pa = 0
     
     for _, row in df.iterrows():
-        ab = row['ab']
-        h = row['h']
-        bb = row['bb']
-        hbp = row['hbp']
-        sf = row['sf']
-        doubles = row['2b']
-        triples = row['3b']
-        hr = row['hr']
+        ab = row['ab'] or 0
+        h = row['h'] or 0
+        bb = row['bb'] or 0
+        hbp = row['hbp'] or 0
+        sf = row['sf'] or 0
+        doubles = row['2b'] or 0
+        triples = row['3b'] or 0
+        hr = row['hr'] or 0
         
         pa = ab + bb + hbp + sf
         
