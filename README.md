@@ -38,13 +38,7 @@ This project leverages multiple high-quality baseball data sources:
 
 ## Notes
 
-This project is inspired by and modeled after stathead baseball's versus finder. Schipper Statlines is created for educational purposes
-
-The code in app.py isn't the cleanest due to a time crunch before the fall semester starts. I will organize it if/when I find the time.
-
-The code for the player version of Schipper Statlines is still present in app.py despite it not being interactable so that viewers here can still look at that code.
-
-Some of the data fetching and reading in inside the player section has yet to be adjusted to postgres syntax from sqlite.
+This project is inspired by and modeled after stathead baseball's versus finder. Schipper Statlines is created for educational purposes.
 
 © Noah Schipper. All rights reserved.
 
