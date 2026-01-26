@@ -361,8 +361,11 @@ def get_allstar_appearances(playerid, conn):
     except Exception as e:
         return 0
 
+@app.route("/")
+def serve_index():
+    return send_from_directory("static", "index.html")
 
-# Add this new route for two-way player handling
+# Route for two-way player handling
 @app.route("/player-two-way")
 def get_player_with_two_way():
     """Enhanced player endpoint that handles two-way players"""
@@ -765,138 +768,6 @@ def popular_players():
         "Kyle Tucker",
     ]
     return jsonify(fallback_players)
-
-
-# Optional: Add a route to get all unique player names (for advanced frontend caching)
-@app.route("/all-players")
-def all_players():
-    """Get all player names - useful for client-side caching if needed"""
-    from sqlalchemy import text
-    
-    try:
-        # Get all players who have batting or pitching stats
-        all_players_query = text("""
-        SELECT DISTINCT p.namefirst || ' ' || p.namelast as full_name
-        FROM lahman_people p
-        WHERE EXISTS (
-            SELECT 1 FROM lahman_batting b WHERE b.playerid = p.playerid
-        ) OR EXISTS (
-            SELECT 1 FROM lahman_pitching pt WHERE pt.playerid = p.playerid
-        )
-        ORDER BY p.namelast, p.namefirst
-        LIMIT 500
-        """)
-
-        with db_engine.connect() as conn:
-            results = conn.execute(all_players_query).fetchall()
-
-        players = [row[0] for row in results]
-        return jsonify(players)
-
-    except Exception as e:
-        import traceback
-        print(f"all_players error: {traceback.format_exc()}")
-        return jsonify([])
-
-# Also add this helper function to improve your existing player lookup
-def improved_player_lookup(name):
-    """Improved player lookup with better fuzzy matching"""
-    from sqlalchemy import text
-    
-    if " " not in name:
-        return None
-
-    first, last = name.split(" ", 1)
-
-    # Try exact match first
-    exact_query = text("""
-    SELECT playerid FROM lahman_people
-    WHERE LOWER(namefirst) = :first AND LOWER(namelast) = :last
-    LIMIT 1
-    """)
-    
-    with db_engine.connect() as conn:
-        result = conn.execute(exact_query, {
-            "first": first.lower(), 
-            "last": last.lower()
-        }).fetchone()
-
-        if result:
-            return result[0]
-
-        # Try fuzzy matching
-        fuzzy_query = text("""
-        SELECT playerid, namefirst, namelast,
-               CASE 
-                   WHEN LOWER(namelast) = :last_exact THEN 1
-                   WHEN LOWER(namefirst) = :first_exact THEN 2  
-                   WHEN LOWER(namelast) LIKE :last_pattern THEN 3
-                   WHEN LOWER(namefirst) LIKE :first_pattern THEN 4
-                   ELSE 5
-               END as match_quality
-        FROM lahman_people
-        WHERE LOWER(namelast) LIKE :last_pattern OR LOWER(namefirst) LIKE :first_pattern
-        ORDER BY match_quality
-        LIMIT 1
-        """)
-
-        search_pattern_last = f"%{last.lower()}%"
-        search_pattern_first = f"%{first.lower()}%"
-
-        result = conn.execute(fuzzy_query, {
-            "last_exact": last.lower(),
-            "first_exact": first.lower(),
-            "last_pattern": search_pattern_last,
-            "first_pattern": search_pattern_first
-        }).fetchone()
-
-        return result[0] if result else None
-
-
-@app.route("/")
-def serve_index():
-    return send_from_directory("static", "index.html")
-
-
-@app.route("/player")
-def get_player_stats():
-    from sqlalchemy import text
-    
-    name = request.args.get("name", "")
-    mode = request.args.get("mode", "career").lower()
-
-    if " " not in name:
-        return jsonify({"error": "Enter full name"}), 400
-
-    first, last = name.split(" ", 1)
-
-    query_id = text("""
-    SELECT playerid FROM lahman_people
-    WHERE LOWER(namefirst) = :first AND LOWER(namelast) = :last
-    LIMIT 1
-    """)
-    
-    with db_engine.connect() as conn:
-        row = conn.execute(query_id, {
-            "first": first.lower(), 
-            "last": last.lower()
-        }).fetchone()
-    if not row:
-        return jsonify({"error": "Player not found"}), 404
-
-    playerid = row[0]
-
-    # Remove the conn parameter since we're not using it
-    player_type = detect_player_type(playerid, None)
-
-    # Get player photo - remove conn parameter
-    photo_url = get_photo_url_for_player(playerid, None)
-
-    if player_type == "pitcher":
-        return handle_pitcher_stats(playerid, None, mode, photo_url, first, last)
-    else:
-        return handle_hitter_stats(playerid, mode, photo_url, first, last)
-
 
 def handle_pitcher_stats(playerid, conn, mode, photo_url, first, last):
     from sqlalchemy import text
