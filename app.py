@@ -12,7 +12,7 @@ SUPABASE_URL = os.environ.get('SUPABASE_URL')
 SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-DATABASE_URL = os.environ.get('DATABASE_URL')  # From Supabase settings
+DATABASE_URL = os.environ.get('DATABASE_URL')
 
 CORS(app, resources={
     r"/*": {
@@ -57,7 +57,6 @@ KNOWN_TWO_WAY_PLAYERS = {
     # Players who had significant time as both (adjust as needed)
     "rickmri01": "Rick Ankiel",  # Started as pitcher, became position player
     "martipe02": "Pedro Martinez",  # Some hitting early in career
-    # Add more as you identify them
     # Format: 'playerid': 'Display Name'
 }
 
@@ -178,8 +177,7 @@ def get_season_war_history(playerid):
         """)
         
         df = pd.read_sql_query(query, db_engine, params={"playerid": playerid})
-        
-        # CRITICAL FIX: Rename to match the merge column
+    
         if 'year_ID' in df.columns:
             df = df.rename(columns={'year_ID': 'yearid'})
         
@@ -454,7 +452,6 @@ def search_players_enhanced():
         search_term = f"%{query_clean}%"
         exact_match = f"{query_clean}%"
 
-        # FIXED: Search across full name concatenation
         search_query = text("""
         SELECT DISTINCT 
             p.namefirst,
@@ -740,7 +737,7 @@ def get_player_with_disambiguation():
     if final_type == "two-way":
         final_type = "hitter"  # Default fallback
     
-    # Get photo URL - remove conn parameter
+    # Get photo URL
     photo_url = get_photo_url_for_player(playerid, None)
 
     if final_type == "pitcher":
@@ -1117,7 +1114,7 @@ def handle_combined_team_stats(team_id, year, mode):
             df = pd.read_sql_query(query, db_engine, params={"team_id": team_id, "year": actual_year})
 
         elif mode in ["franchise", "career", "overall"]:
-            # Check for franchise moves - Milwaukee Brewers example
+            # Check for franchise moves
             franchise_ids = get_franchise_team_ids(team_id)
 
             if len(franchise_ids) > 1:
@@ -1480,8 +1477,6 @@ def format_combined_team_response(df, mode, team_id, year):
     except Exception as e:
         return jsonify({"error": f"Response formatting error: {str(e)}"}), 500
 
-
-# Include all your existing helper functions here:
 def parse_team_input(team):
     """Parse team input like '2024 Dodgers', 'Dodgers 2024', 'Yankees', etc."""
     try:
@@ -1526,7 +1521,6 @@ def get_team_code_from_search(search_term):
     """Convert team search terms to database team codes"""
     search_term = search_term.lower().strip()
 
-    # Your existing team mapping dictionaries here...
     # Direct team code mappings (if they search the exact code)
     team_codes = {
         # Angels - various historical codes
@@ -1900,7 +1894,6 @@ def get_team_name(team_id, year=None, mode=None):
 def get_team_logo_url(team_id, year=None):
     """Get team logo URL using working MLB logo sources"""
 
-    # Map your database team codes to MLB's team IDs and abbreviations
     mlb_team_mapping = {
         # Angels
         "ALT": {"abbrev": "LAA", "id": "108"},
@@ -2024,20 +2017,19 @@ def get_team_logo_url(team_id, year=None):
 def get_team_logo_with_fallback(team_id, year=None):
     """Get team logo with fallback options"""
     mlb_team_mapping = {
-        # Fixed mappings - database code to ESPN abbreviation
+        # mappings - database code to ESPN abbreviation
         "CHN": {"abbrev": "chc"},  # Cubs
         "CHA": {"abbrev": "cws"},  # White Sox
         "LAN": {"abbrev": "lad"},  # Dodgers
-        "SLN": {"abbrev": "stl"},  # Cardinals - FIXED
-        "SDN": {"abbrev": "sd"},  # Padres - FIXED
-        "SFN": {"abbrev": "sf"},  # Giants - FIXED
-        "NYN": {"abbrev": "nym"},  # Mets - FIXED
-        "NYA": {"abbrev": "nyy"},  # Yankees - FIXED
-        "KCA": {"abbrev": "kc"},  # Royals - FIXED
-        "WAS": {"abbrev": "wsh"},  # Nationals - FIXED
+        "SLN": {"abbrev": "stl"},  # Cardinals
+        "SDN": {"abbrev": "sd"},  # Padres
+        "SFN": {"abbrev": "sf"},  # Giants
+        "NYN": {"abbrev": "nym"},  # Mets
+        "NYA": {"abbrev": "nyy"},  # Yankees
+        "KCA": {"abbrev": "kc"},  # Royals 
+        "WAS": {"abbrev": "wsh"},  # Nationals
         "TBA": {"abbrev": "tb"},  # Rays
         "WSN": {"abbrev": "wsh"},  # Alternative Nationals code
-        # Other teams for completeness
         "LAA": {"abbrev": "laa"},  # Angels
         "ARI": {"abbrev": "ari"},  # Diamondbacks
         "ATL": {"abbrev": "atl"},  # Braves
@@ -2119,11 +2111,9 @@ def get_regular_season_h2h(engine, team_a, team_b, year_filter=None):
         team_a_ids = get_franchise_team_ids(team_a)
         team_b_ids = get_franchise_team_ids(team_b)
         
-        # Test basic connection and table existence
         with engine.connect() as conn:
             print("Database connection established successfully")
             
-            # Check if table exists using inspector
             inspector = inspect(engine)
             tables = inspector.get_table_names()
             
@@ -2348,4 +2338,5 @@ def team_h2h():
 
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5000))
+
     app.run(host='0.0.0.0', port=port, debug=False)
